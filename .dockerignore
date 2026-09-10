@@ -1,0 +1,13 @@
+.git
+.github
+bin/
+data/
+docs/
+*.db
+*.db-shm
+*.db-wal
+cover.out
+cover.html
+preview.svg
+.env
+README.md
