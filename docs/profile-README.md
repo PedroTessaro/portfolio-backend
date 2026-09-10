@@ -11,17 +11,27 @@
   regions, so they have to live in markdown.
 -->
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
-  <img alt="Terminal session: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker, followed by a live listing of my projects and the service's own metrics." src="https://pedrotessaro.vercel.app/terminal.svg">
-</picture>
+<!--
+  The <p> wrappers are load-bearing. GitHub doesn't wrap consecutive HTML blocks
+  in paragraphs, and <sub> is inline with no margin of its own, so without them
+  the caption sits flush against the image.
+-->
 
-<sub>
-Everything above is rendered per request by
-<a href="https://github.com/PedroTessaro/portfolio-backend">portfolio-backend</a> —
-the project listing, the counts and the response time are read live, not written here.
-Try it: <code>curl -s https://pedrotessaro.vercel.app/whoami</code>
-</sub>
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
+    <img alt="Terminal session: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker, followed by a live listing of my projects and the service's own metrics." src="https://pedrotessaro.vercel.app/terminal.svg">
+  </picture>
+</p>
+
+<p>
+  <sub>
+    Everything above is rendered per request by
+    <a href="https://github.com/PedroTessaro/portfolio-backend">portfolio-backend</a> —
+    the project listing, the counts and the response time are read live, not written here.
+    Try it: <code>curl -s https://pedrotessaro.vercel.app/whoami</code>
+  </sub>
+</p>
 
 ---
 

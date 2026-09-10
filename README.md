@@ -5,10 +5,12 @@ opens my profile it renders a fresh SVG: the project listing, the counts and the
 response time are all read at request time. My profile README is the image and a
 row of links, nothing else.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
-  <img alt="Animated terminal rendering my profile on demand" src="https://pedrotessaro.vercel.app/terminal.svg">
-</picture>
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
+    <img alt="Animated terminal rendering my profile on demand" src="https://pedrotessaro.vercel.app/terminal.svg">
+  </picture>
+</p>
 
 The command it types is real:
 
