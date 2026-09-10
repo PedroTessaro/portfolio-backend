@@ -1,58 +1,47 @@
 <!--
   Profile README — copy everything below into PedroTessaro/PedroTessaro/README.md
-  (the repo named after the user, which GitHub shows at the top of the profile).
+  (the repo named after your user, which GitHub shows at the top of the profile).
 
   Check first:
-    1. the Fly app is up and its URL matches the one in config.yaml
+    1. the deployment is up and the URL matches internal/config/profile.yaml
     2. open the SVG URL in a browser once, to confirm the animation runs
 -->
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.fly.dev/terminal.svg?theme=light">
-  <img alt="Terminal showing: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker." src="https://pedrotessaro.fly.dev/terminal.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://portfolio-backend.vercel.app/terminal.svg?theme=light">
+  <img alt="Terminal showing: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker." src="https://portfolio-backend.vercel.app/terminal.svg">
 </picture>
 
-### That terminal is not a GIF
-
-It is a Go service rendering an SVG on every request, with live numbers from the
-GitHub API, a SQLite view counter and its own runtime metrics. The `curl` command
-it types works — try it:
+That terminal isn't a GIF. It's a Go service that renders the SVG on every
+request, and the command it types actually answers:
 
 ```console
-$ curl -s https://pedrotessaro.fly.dev/whoami
+$ curl -s https://portfolio-backend.vercel.app/whoami
 ```
 
-Source, and why animating a README is harder than it looks:
-**[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend)**
+Code and the writeup on why animating a README is harder than it looks:
+[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend).
 
----
+### What I work on
 
-### Backend & systems
+Backend, mostly Go these days, and the layers underneath it. A lot of what I've
+built is about making those layers visible: assemblers, interpreters, a text
+editor from raw-mode input up.
 
-I build services and I like the layers underneath them — how memory is laid out,
-how a scheduler decides, how a parser turns text into structure. Most of what I
-write ends up being about making those layers explicit.
+- [portfolio-backend](https://github.com/PedroTessaro/portfolio-backend) — the service above. Go, SMIL, Redis, Vercel
+- [RSSAggregator](https://github.com/PedroTessaro/RSSAggregator) — feed aggregator in Go, concurrent fetching and a REST API
+- [AssemblerImplementation](https://github.com/PedroTessaro/AssemblerImplementation) — two-pass assembler in Java, symbol table and relocation
+- [ReversePolishNotationInterpreter](https://github.com/PedroTessaro/ReversePolishNotationInterpreter) — stack-based expression interpreter
+- [parallel_programming_studies](https://github.com/PedroTessaro/parallel_programming_studies) — threads and synchronization in C
+- [TextEditor](https://github.com/PedroTessaro/TextEditor) — terminal editor in C++
 
-| | |
-|---|---|
-| **[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend)** | The service behind the terminal above. Go, SMIL, SQLite, Fly.io |
-| **[RSSAggregator](https://github.com/PedroTessaro/RSSAggregator)** | Feed aggregator in Go — concurrent fetching, persistence, REST API |
-| **[AssemblerImplementation](https://github.com/PedroTessaro/AssemblerImplementation)** | A two-pass assembler in Java: symbol table, relocation, object output |
-| **[ReversePolishNotationInterpreter](https://github.com/PedroTessaro/ReversePolishNotationInterpreter)** | Stack-based expression interpreter in Java |
-| **[parallel_programming_studies](https://github.com/PedroTessaro/parallel_programming_studies)** | Concurrency primitives in C: threads, synchronization, shared memory |
-| **[TextEditor](https://github.com/PedroTessaro/TextEditor)** | Terminal text editor in C++, built from raw-mode input up |
-
-Currently going deeper into Go, distributed systems and everything that happens
-between a request arriving and a row being written.
-
----
+Currently going deeper into Go and distributed systems.
 
 ### Elsewhere
 
-Computer Science student, piano teacher, and — before backend took over — a fair
-number of Swift apps built at the **Apple Developer Academy | Mackenzie**. They
-are still in [my repositories](https://github.com/PedroTessaro?tab=repositories);
-they just are not what I am building now.
+CS student and piano teacher. Before backend took over I wrote a fair number of
+Swift apps at the Apple Developer Academy | Mackenzie — still in
+[my repositories](https://github.com/PedroTessaro?tab=repositories), just not
+what I'm building now.
 
-[LinkedIn](https://www.linkedin.com/in/pedrotessaro/) ·
-[ptssar22@gmail.com](mailto:ptssar22@gmail.com)
+[LinkedIn](https://www.linkedin.com/in/pedrotessaro/) · ptssar22@gmail.com

@@ -1,168 +1,120 @@
 # portfolio-backend
 
-The animated terminal at the top of my GitHub profile is not a GIF. It is a Go
-service that renders an SVG per request, with numbers fetched live.
+The terminal at the top of my GitHub profile is this service. Every time someone
+opens my profile it renders a fresh SVG, with the repo counts pulled from the
+GitHub API and the response time measured on that request.
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.fly.dev/terminal.svg?theme=light">
-  <img alt="Animated terminal rendering my profile on demand" src="https://pedrotessaro.fly.dev/terminal.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://portfolio-backend.vercel.app/terminal.svg?theme=light">
+  <img alt="Animated terminal rendering my profile on demand" src="https://portfolio-backend.vercel.app/terminal.svg">
 </picture>
 
+The command it types is real:
+
 ```console
-$ curl -s https://pedrotessaro.fly.dev/whoami
+$ curl -s https://portfolio-backend.vercel.app/whoami
 ```
 
-The command the terminal types actually works — it is the same service answering
-in JSON.
+## Why SMIL
 
----
+GitHub doesn't load README images from your server. They go through Camo, its
+image proxy, and land inside an `<img>` tag. Nothing runs in there: no
+JavaScript, no webfonts, no fetches. And Camo caches hard, so without
+`no-store` the image freezes and the numbers stay stuck at whatever they were
+the first time someone looked.
 
-## Why this is less trivial than it looks
-
-GitHub does not serve a README image directly. It proxies it through **Camo**,
-inside an `<img>` tag. That imposes three constraints which shape the whole
-project:
-
-| Constraint | Consequence |
-|---|---|
-| `<img>` does not run JavaScript | The animation has to be **SMIL**, not JS |
-| External resources do not load | No webfont; only the system monospace stack |
-| Camo caches aggressively | Without the right headers the image freezes and the numbers stop moving |
-
-### The typing effect
-
-Each line is revealed by a `<clipPath>` whose rectangle grows one character at a
-time. The detail that separates typing from a curtain sliding open is
-`calcMode="discrete"`:
+That leaves SMIL. Each line sits behind a `<clipPath>` whose rectangle widens one
+character at a time:
 
 ```xml
-<clipPath id="type0">
-  <rect x="26" y="47" width="0" height="25">
-    <animate attributeName="width" values="0;9;18;27;…"
-             calcMode="discrete" dur="2.2s" begin="0.35s" fill="freeze"/>
-  </rect>
-</clipPath>
+<rect x="26" y="47" width="0" height="25">
+  <animate attributeName="width" values="0;9;18;27;…"
+           calcMode="discrete" dur="2.2s" begin="0.35s" fill="freeze"/>
+</rect>
 ```
 
-### Alignment cannot depend on the visitor's fonts
+`calcMode="discrete"` is the whole trick. Without it the width interpolates
+smoothly and you get a curtain sliding open instead of someone typing.
 
-If the visitor does not have the expected monospace, the browser substitutes one
-with different metrics, and a clip computed in 9px steps lands mid-character.
+## The font problem
 
-Declaring `textLength` on every run of text pins the geometry to what the server
-computed instead of whatever the local font happens to produce:
+I had this working and then tried it on a machine without my monospace installed.
+The browser substituted something with different metrics, and the clip — stepping
+in fixed 9px increments — started cutting glyphs in half.
+
+Fix is `textLength` on every run of text:
 
 ```go
 `<text x="%s" y="%s" fill="%s" textLength="%s" lengthAdjust="spacingAndGlyphs" …>`
 ```
 
-### The latency on screen is honest
+That forces each run into the width I computed regardless of what font actually
+renders. Segments are separate `<text>` elements rather than `<tspan>`s for the
+same reason: every one starts at a column I already know.
 
-The SVG reports how long it took to build itself. For that number to mean
-anything, no request can wait on the GitHub API: a goroutine refreshes the stats
-every 15 minutes and the handlers only read the cache. If GitHub goes down, the
-last good values stay up marked `cached` — a README with 20-minute-old numbers
-beats a broken one.
+## Serverless changed the design
 
----
+This ran on Fly first, as a normal server with SQLite on a volume. Vercel has no
+disk and no process between requests, so three things had to change.
 
-## Architecture
+The view counter moved to Redis over its HTTP API — no driver, no pool to keep
+warm. It's optional: with no credentials configured the counter line just
+disappears from the SVG instead of rendering zeros.
 
-```
-                    ┌──────────────────────────────┐
-   GitHub README ──▶│  Camo (image proxy)          │
-                    └──────────────┬───────────────┘
-                                   │  GET /terminal.svg
-                    ┌──────────────▼───────────────┐
-                    │  httpapi   handlers, headers │
-                    └──┬────────┬─────────┬────────┘
-                       │        │         │
-              ┌────────▼──┐ ┌───▼─────┐ ┌─▼──────────┐
-              │ svgterm   │ │ store   │ │ githubapi  │
-              │ draws the │ │ SQLite  │ │ cache +    │
-              │ SVG       │ │ (volume)│ │ bg refresh │
-              └───────────┘ └─────────┘ └─────┬──────┘
-                                              │ every 15 min
-                                        ┌─────▼──────┐
-                                        │ api.github │
-                                        └────────────┘
-```
+The GitHub numbers were refreshed by a background goroutine, which doesn't exist
+here. Now they're cached in the instance while it's warm, and in Redis so a cold
+start inherits whatever an earlier invocation fetched. Only the request that
+misses both pays for the API call.
 
-| Package | Responsibility |
-|---|---|
-| `internal/svgterm` | Builds the SVG: geometry, palette, animation timeline |
-| `internal/githubapi` | Client with background refresh and stale fallback |
-| `internal/store` | View counter in SQLite, rolled up per day |
-| `internal/config` | Editorial content in YAML, validated at boot |
-| `internal/httpapi` | Routes, anti-cache headers, structured logging |
+And there's no uptime to report, so that line says whether the instance was cold
+or warm. Less impressive, but true.
 
 ## Endpoints
 
-| Route | What it does |
-|---|---|
-| `GET /terminal.svg` | The animated terminal. `?theme=light`, `?static=1` |
-| `GET /whoami` | The JSON the terminal claims to fetch |
-| `GET /healthz` | Health check consumed by Fly |
-| `GET /metrics` | Prometheus exposition format |
+- `GET /terminal.svg` — the terminal. `?theme=light` and `?static=1` both work
+- `GET /whoami` — the JSON the terminal claims to fetch
+- `GET /healthz`
+- `GET /metrics` — Prometheus exposition format
 
-`?static=1` draws the final frame without SMIL, for renderers that ignore
-animation — GitHub's social card and some feed readers would otherwise show an
-empty window.
+`?static=1` skips SMIL and draws the final frame. GitHub's social card and some
+feed readers ignore animation, and would otherwise show an empty window.
 
-## Running locally
+## Running it
 
 ```bash
 make run
 open http://localhost:8080/terminal.svg
 ```
 
-Without `GITHUB_TOKEN` the service works, but the commits column disappears:
-contributions only exist on the GraphQL API, which requires auth.
+Works with no configuration at all, just with fewer numbers. `GITHUB_TOKEN`
+enables the commits column (contributions are GraphQL-only, which needs auth).
+`KV_REST_API_URL` and `KV_REST_API_TOKEN` enable the view counter — Vercel's
+Upstash integration sets both. `CONFIG_PATH` overrides the embedded YAML, which
+is handy when you're iterating on the text.
 
-```bash
-GITHUB_TOKEN=ghp_… make run
-```
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `8080` | HTTP port |
-| `CONFIG_PATH` | `config.yaml` | Terminal content |
-| `DB_PATH` | `data/portfolio.db` | SQLite file for the counter |
-| `GITHUB_TOKEN` | — | Enables the contributions count |
-| `FLY_REGION` | `local` | Set by Fly in production |
-
-Changing the bio or the stack means editing `config.yaml` — no rebuild.
-
-## Tests
+The content itself lives in `internal/config/profile.yaml`. It's embedded with
+`go:embed` because the function ships as a binary with no repo around it.
 
 ```bash
 make test
 make race
-make cover
 ```
 
-The central test checks that the SVG is **well-formed XML**: browsers drop an
-invalid document silently, with nothing in the server logs — the README would
-just show a broken image.
+The test I actually care about parses the output as XML. An invalid SVG gets
+dropped silently by the browser — nothing in the logs, just a broken image in the
+README — so it's the failure most worth catching.
 
-## Deploy
+## Rough edges
 
-```bash
-fly launch --no-deploy
-fly volumes create portfolio_data --size 1 --region gru
-make deploy
-```
+Cold starts cost about 1.3s when the Redis cache has also expired, because that
+request goes out to GitHub synchronously. Warm requests are under a millisecond.
+I'd rather have that than a background job I can't run here, but it does mean the
+occasional visitor waits.
 
-## Decisions worth explaining
+`?static=1` output isn't cached either, and it probably should be.
 
-**SQLite rolled up per day, not one row per visit.** The total stays exact,
-"today" is a single-row lookup, and the table grows ~365 rows a year.
+## Self-hosting
 
-**Pure-Go SQLite driver** (`modernc.org/sqlite`). No cgo means a static binary on
-a ~2 MB distroless image, with no libc.
-
-**A single connection in the pool.** SQLite serialises writes anyway; more
-connections would only buy contention and `SQLITE_BUSY`.
-
-**Config validated at boot.** An empty field kills the process immediately
-instead of becoming a hole in the SVG served to visitors.
+There's a Dockerfile. Same handler, running as a plain HTTP server instead of a
+function. cgo is off so the binary is static (6.9 MB) and the base image is
+distroless.
