@@ -13,6 +13,6 @@ stack:
   - "Docker"
 
 terminal:
-  host: "pedrotessaro.fly.dev"
+  host: "pedrotessaro.vercel.app"
   user: "tessaro"
   machine: "portfolio"

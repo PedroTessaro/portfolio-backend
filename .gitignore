@@ -8,7 +8,9 @@ cover.html
 preview.svg
 .env
 
-# swaps de editor
+# editor swap files
 *.swp
 *.swo
 .DS_Store
+.vercel
+.env*

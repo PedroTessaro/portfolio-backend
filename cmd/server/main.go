@@ -1,6 +1,7 @@
-// Command server runs the service as an ordinary HTTP server, for local work
-// and for self-hosting from the Dockerfile. Production runs the same handler as
-// a Vercel function; see api/index.go.
+// Command server is the whole service. Vercel detects the Go project, builds
+// this binary and runs it behind its own router, passing PORT in — so the thing
+// running in production is the same thing that runs locally, and the Dockerfile
+// builds it too.
 package main
 
 import (
@@ -16,11 +17,12 @@ import (
 	"github.com/PedroTessaro/portfolio-backend/internal/app"
 )
 
-// Overridden at build time: -ldflags "-X main.version=$(git rev-parse --short HEAD)"
-var version = "dev"
+// Set at build time by the Makefile; on Vercel it comes from the environment
+// instead, see version().
+var buildVersion = "dev"
 
 func main() {
-	routes, err := app.Build(version)
+	routes, err := app.Build(version())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -43,7 +45,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s (version %s)", srv.Addr, version)
+		log.Printf("listening on %s (version %s)", srv.Addr, version())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -59,4 +61,13 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+}
+
+// version prefers the commit Vercel built from, which makes a deploy
+// identifiable from /whoami without a build flag.
+func version() string {
+	if sha := os.Getenv("VERCEL_GIT_COMMIT_SHA"); len(sha) >= 7 {
+		return sha[:7]
+	}
+	return buildVersion
 }

@@ -5,14 +5,14 @@ opens my profile it renders a fresh SVG, with the repo counts pulled from the
 GitHub API and the response time measured on that request.
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://portfolio-backend.vercel.app/terminal.svg?theme=light">
-  <img alt="Animated terminal rendering my profile on demand" src="https://portfolio-backend.vercel.app/terminal.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
+  <img alt="Animated terminal rendering my profile on demand" src="https://pedrotessaro.vercel.app/terminal.svg">
 </picture>
 
 The command it types is real:
 
 ```console
-$ curl -s https://portfolio-backend.vercel.app/whoami
+$ curl -s https://pedrotessaro.vercel.app/whoami
 ```
 
 ## Why SMIL

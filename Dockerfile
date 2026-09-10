@@ -1,5 +1,5 @@
-# Production runs on Vercel as a function (see api/index.go). This image is for
-# self-hosting the same handler as a plain HTTP server.
+# Vercel builds and runs cmd/server directly. This image is for
+# self-hosting the same binary anywhere else.
 
 # --- build -------------------------------------------------------------------
 FROM golang:1.27-alpine AS build
@@ -14,7 +14,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags "-s -w -X main.version=${VERSION}" \
+    -ldflags "-s -w -X main.buildVersion=${VERSION}" \
     -o /out/server ./cmd/server
 
 # --- runtime -----------------------------------------------------------------

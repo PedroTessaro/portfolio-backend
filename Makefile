@@ -11,7 +11,7 @@ run: ## Run locally on :8080
 
 build: ## Build the binary into bin/
 	@mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o $(BIN) ./cmd/server
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.buildVersion=$(VERSION)" -o $(BIN) ./cmd/server
 
 test: ## Run the tests
 	go test ./...
