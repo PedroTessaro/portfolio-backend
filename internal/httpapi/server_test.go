@@ -22,7 +22,12 @@ import (
 type stubStats struct{}
 
 func (stubStats) Stats(context.Context) githubapi.Stats {
-	return githubapi.Stats{Repos: 27, Stars: 9, FetchedAt: time.Now()}
+	return githubapi.Stats{
+		Repos: 27, Stars: 9, FetchedAt: time.Now(),
+		Projects: []githubapi.Project{
+			{Name: "portfolio-backend", Language: "Go", Stars: 3, PushedAt: time.Now()},
+		},
+	}
 }
 
 // newTestServer builds a server with no counter configured, which is also the
@@ -170,7 +175,7 @@ func TestWhoamiIsValidJSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	for _, key := range []string{"name", "role", "stack", "github", "server"} {
+	for _, key := range []string{"name", "role", "stack", "projects", "github", "server"} {
 		if _, ok := payload[key]; !ok {
 			t.Errorf("missing key %q", key)
 		}
@@ -221,5 +226,25 @@ func TestRootRedirectsToTerminal(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/terminal.svg" {
 		t.Errorf("Location = %q", loc)
+	}
+}
+
+// The terminal lists projects, so the JSON behind it has to carry them too.
+func TestWhoamiCarriesProjects(t *testing.T) {
+	var payload struct {
+		Projects []struct {
+			Name     string `json:"name"`
+			Language string `json:"language"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(get(t, newTestServer(t), "/whoami").Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode whoami: %v", err)
+	}
+
+	if len(payload.Projects) != 1 {
+		t.Fatalf("got %d projects, want 1", len(payload.Projects))
+	}
+	if payload.Projects[0].Name != "portfolio-backend" || payload.Projects[0].Language != "Go" {
+		t.Errorf("project = %+v", payload.Projects[0])
 	}
 }

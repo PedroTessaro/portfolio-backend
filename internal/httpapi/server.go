@@ -135,6 +135,8 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"role":     s.cfg.Identity.Role,
 		"location": s.cfg.Identity.Location,
 		"stack":    s.cfg.Stack,
+		"tagline":  s.cfg.Identity.Tagline,
+		"projects": stats.Projects,
 		"github": map[string]any{
 			"user":              s.cfg.Identity.GitHubUser,
 			"repos":             stats.Repos,
