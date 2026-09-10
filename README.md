@@ -91,12 +91,33 @@ The reason for curating at all: sorting purely by recency puts whatever I last
 poked at on top, and that is usually a scratch repo rather than something worth
 showing.
 
+## The CI reports on itself
+
+The terminal prints `ci passing · tests 59 · coverage 82%`. Nobody types those
+numbers. The workflow runs gofmt, vet and the race detector, then posts its own
+results to the service:
+
+```
+GitHub Actions ──POST /internal/ci──▶ service ──▶ Redis ──▶ next SVG render
+```
+
+The first version of this handed the workflow the Redis credentials directly.
+That was wrong twice over. `vercel env pull` doesn't export sensitive values — it
+writes the literal string `[SENSITIVE]`, which is what actually ended up in the
+secret, and curl then failed on the bracket. And giving CI write access to the
+service's database was the wrong shape regardless. Now the workflow holds a token
+for one endpoint that can write one key.
+
+If the workflow has never run, the line isn't there. Same rule as everywhere else
+here.
+
 ## Endpoints
 
 - `GET /terminal.svg` — the terminal. `?theme=light` and `?static=1` both work
 - `GET /whoami` — the JSON the terminal claims to fetch
 - `GET /healthz`
 - `GET /metrics` — Prometheus exposition format
+- `POST /internal/ci` — bearer token, used by the workflow above
 
 `?static=1` skips SMIL and draws the final frame. GitHub's social card and some
 feed readers ignore animation, and would otherwise show an empty window.
@@ -110,8 +131,10 @@ open http://localhost:8080/terminal.svg
 
 Works with no configuration at all, just with fewer numbers. `GITHUB_TOKEN`
 enables the commits column (contributions are GraphQL-only, which needs auth).
-`KV_REST_API_URL` and `KV_REST_API_TOKEN` enable the view counter — Vercel's
-Upstash integration sets both. `CONFIG_PATH` overrides the embedded YAML, which
+`KV_REST_API_URL` and `KV_REST_API_TOKEN` enable the view counter, the latency
+window and the CI line — Vercel's Upstash integration sets both.
+`CI_PUBLISH_TOKEN` has to match the repository secret of the same name, or the
+publish endpoint stays closed. `CONFIG_PATH` overrides the embedded YAML, which
 is handy when you're iterating on the text.
 
 The content itself lives in `internal/config/profile.yaml`. It's embedded with
@@ -126,12 +149,34 @@ The test I actually care about parses the output as XML. An invalid SVG gets
 dropped silently by the browser — nothing in the logs, just a broken image in the
 README — so it's the failure most worth catching.
 
+## Two things I got wrong
+
+Worth writing down because both were silent.
+
+**The cache outlived its meaning.** I added a field to the cached struct, deployed,
+and production kept serving the old shape — it decoded cleanly, the new field just
+came back empty, and it stayed that way for a full TTL. I bumped a version suffix
+by hand; then the same thing happened again after a logic fix, where the shape
+hadn't changed at all but the *answer* had. The key now carries the build, so a
+deploy costs one API call and never inherits a previous build's conclusions.
+
+**A PushEvent doesn't contain a commit.** The obvious source for "last commit" is
+`/users/{u}/events/public`, and the public payload turns out to be
+`before/head/ref/push_id` with no message anywhere. The line silently stayed empty
+until I actually printed the payload. It now asks the most recently pushed repo
+for its head commit instead.
+
 ## Rough edges
 
-Cold starts cost about 1.3s when the Redis cache has also expired, because that
-request goes out to GitHub synchronously. Warm requests are under a millisecond.
-I'd rather have that than a background job I can't run here, but it does mean the
-occasional visitor waits.
+A cold start that also misses the Redis cache goes out to GitHub on the request
+path and costs a few hundred milliseconds. Warm requests are around a
+millisecond. I'd rather have that than a background job I can't run here, but the
+occasional visitor does wait.
+
+The percentile line hides below thirty samples. With five, a single cold start
+owns the p95 and the service looks slow for no reason — but it does mean the line
+vanishes after a quiet week, since the window is a fixed 500 entries and never
+expires.
 
 `?static=1` output isn't cached either, and it probably should be.
 
