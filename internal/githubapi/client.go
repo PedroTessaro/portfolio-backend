@@ -170,7 +170,7 @@ func (c *Client) fetch(ctx context.Context) (Stats, error) {
 
 	// Both of the following are extras: a failure costs one line of the SVG,
 	// never the whole render.
-	if last, err := c.fetchLastCommit(ctx); err == nil {
+	if last, err := c.fetchLastCommit(ctx, repos); err == nil {
 		stats.Last = last
 	} else {
 		c.log.Warn("last commit unavailable", "err", err)
@@ -256,43 +256,50 @@ func (c *Client) featuredFrom(repos []repo) []Project {
 	return projects
 }
 
-// fetchLastCommit reads the public event feed, which already carries the commit
-// message — cheaper than finding the newest repo and then asking for its head.
-func (c *Client) fetchLastCommit(ctx context.Context) (Commit, error) {
-	var events []struct {
-		Type      string    `json:"type"`
-		CreatedAt time.Time `json:"created_at"`
-		Repo      struct {
-			Name string `json:"name"`
-		} `json:"repo"`
-		Payload struct {
-			Commits []struct {
-				Message string `json:"message"`
-			} `json:"commits"`
-		} `json:"payload"`
+// fetchLastCommit asks the most recently pushed repo for its head commit.
+//
+// The obvious route, /users/{u}/events/public, turns out to be useless for
+// this: its PushEvent payload carries before/head/ref and no commit message at
+// all. Going through the repo list we already have costs the same one extra
+// call and returns the real subject line.
+func (c *Client) fetchLastCommit(ctx context.Context, repos []repo) (Commit, error) {
+	var newest repo
+	for _, r := range repos {
+		if r.PushedAt.After(newest.PushedAt) {
+			newest = r
+		}
+	}
+	if newest.Name == "" {
+		return Commit{}, fmt.Errorf("no repositories to read")
 	}
 
-	url := fmt.Sprintf("%s/users/%s/events/public?per_page=100", c.baseURL, c.user)
-	if err := c.getJSON(ctx, url, &events); err != nil {
+	var commits []struct {
+		Commit struct {
+			Message   string `json:"message"`
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=1", c.baseURL, c.user, newest.Name)
+	if err := c.getJSON(ctx, url, &commits); err != nil {
 		return Commit{}, err
 	}
-
-	for _, e := range events {
-		if e.Type != "PushEvent" || len(e.Payload.Commits) == 0 {
-			continue
-		}
-		// A push carries its commits oldest first, so the newest is last.
-		message := e.Payload.Commits[len(e.Payload.Commits)-1].Message
-		if i := strings.IndexByte(message, '\n'); i >= 0 {
-			message = message[:i] // subject line only
-		}
-		return Commit{
-			Message: strings.TrimSpace(message),
-			Repo:    strings.TrimPrefix(e.Repo.Name, c.user+"/"),
-			At:      e.CreatedAt,
-		}, nil
+	if len(commits) == 0 {
+		return Commit{}, fmt.Errorf("%s has no commits", newest.Name)
 	}
-	return Commit{}, fmt.Errorf("no push events in the recent feed")
+
+	message := commits[0].Commit.Message
+	if i := strings.IndexByte(message, '\n'); i >= 0 {
+		message = message[:i] // subject line only
+	}
+
+	return Commit{
+		Message: strings.TrimSpace(message),
+		Repo:    newest.Name,
+		At:      commits[0].Commit.Committer.Date,
+	}, nil
 }
 
 func (c *Client) fetchContributions(ctx context.Context) (int, error) {

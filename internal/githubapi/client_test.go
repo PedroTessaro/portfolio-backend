@@ -27,8 +27,8 @@ func featuringClient(t *testing.T, featured []string, cache Cache, repos http.Ha
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/events") {
-			fmt.Fprint(w, `[]`) // no push events; the commit line is simply dropped
+		if strings.Contains(r.URL.Path, "/commits") {
+			fmt.Fprint(w, `[]`) // no commits; the git log line is simply dropped
 			return
 		}
 		repos(w, r)
@@ -329,5 +329,57 @@ func TestMissingLanguageGetsAPlaceholder(t *testing.T) {
 	}
 	if stats.Projects[0].Language != "-" {
 		t.Errorf("language = %q, want a placeholder", stats.Projects[0].Language)
+	}
+}
+
+// The events feed looked like the obvious source and isn't: its payload has no
+// commit message. This covers the route that actually works.
+func TestLastCommitComesFromTheNewestRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/commits") {
+			if !strings.Contains(r.URL.Path, "/recent-one/") {
+				t.Errorf("asked %s for commits, want the most recently pushed repo", r.URL.Path)
+			}
+			fmt.Fprint(w, `[{"commit":{"message":"Fix the thing\n\nlonger body here","committer":{"date":"2026-09-10T12:00:00Z"}}}]`)
+			return
+		}
+		fmt.Fprint(w, `[
+            {"name":"old-one","fork":false,"language":"Go","pushed_at":"2025-01-01T00:00:00Z"},
+            {"name":"recent-one","fork":false,"language":"Go","pushed_at":"2026-09-10T00:00:00Z"}
+        ]`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("PedroTessaro", "", nil, 15*time.Minute, nil, discardLogger())
+	c.baseURL = srv.URL
+
+	stats, err := c.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if stats.Last.Repo != "recent-one" {
+		t.Errorf("repo = %q, want recent-one", stats.Last.Repo)
+	}
+	// Subject line only; the body belongs in the commit, not in a terminal.
+	if stats.Last.Message != "Fix the thing" {
+		t.Errorf("message = %q, want just the subject", stats.Last.Message)
+	}
+}
+
+// An empty repo, or GitHub having a bad day, costs one line and nothing else.
+func TestLastCommitFailureIsNotFatal(t *testing.T) {
+	c := featuringClient(t, nil, nil, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"name":"empty","fork":false,"stargazers_count":4,"pushed_at":"2026-09-10T00:00:00Z"}]`)
+	})
+
+	stats, err := c.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch should survive a missing commit: %v", err)
+	}
+	if !stats.Last.Empty() {
+		t.Errorf("expected no commit, got %+v", stats.Last)
+	}
+	if stats.Stars != 4 {
+		t.Errorf("the rest of the stats should be intact, stars = %d", stats.Stars)
 	}
 }
