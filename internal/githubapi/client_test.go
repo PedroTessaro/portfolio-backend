@@ -2,6 +2,7 @@ package githubapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,18 +14,48 @@ import (
 	"time"
 )
 
-func testClient(t *testing.T, handler http.HandlerFunc) *Client {
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func testClient(t *testing.T, cache Cache, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	c := New("PedroTessaro", "", time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := New("PedroTessaro", "", 15*time.Minute, cache, discardLogger())
 	c.baseURL = srv.URL
 	return c
 }
 
+// memCache stands in for Redis and counts reads and writes.
+type memCache struct {
+	entries map[string][]byte
+	gets    atomic.Int32
+	sets    atomic.Int32
+}
+
+func newMemCache() *memCache { return &memCache{entries: map[string][]byte{}} }
+
+func (m *memCache) GetCached(_ context.Context, key string, dst any) (bool, error) {
+	m.gets.Add(1)
+	raw, ok := m.entries[key]
+	if !ok {
+		return false, nil
+	}
+	return true, json.Unmarshal(raw, dst)
+}
+
+func (m *memCache) SetCached(_ context.Context, key string, value any, _ time.Duration) error {
+	m.sets.Add(1)
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	m.entries[key] = raw
+	return nil
+}
+
 func TestFetchIgnoresForksAndSumsStars(t *testing.T) {
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `[
             {"fork": false, "stargazers_count": 5},
             {"fork": true,  "stargazers_count": 900},
@@ -47,7 +78,7 @@ func TestFetchIgnoresForksAndSumsStars(t *testing.T) {
 func TestFetchPaginates(t *testing.T) {
 	var calls atomic.Int32
 
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
 			// A full page means the client should ask for the next one.
 			w.Write([]byte("["))
@@ -75,24 +106,76 @@ func TestFetchPaginates(t *testing.T) {
 	}
 }
 
-func TestStatsBeforeFirstRefresh(t *testing.T) {
-	c := New("PedroTessaro", "", time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
+// The whole point of the memo: a warm instance must not call GitHub again.
+func TestWarmInstanceSkipsTheAPI(t *testing.T) {
+	var calls atomic.Int32
 
-	stats := c.Stats()
-	if !stats.Stale {
-		t.Error("a snapshot with no refresh yet should be marked stale")
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `[{"fork":false,"stargazers_count":3}]`)
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if got := c.Stats(ctx).Stars; got != 3 {
+			t.Fatalf("stars = %d on call %d", got, i)
+		}
 	}
-	if stats.Repos != 0 {
-		t.Errorf("repos = %d, want 0", stats.Repos)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("GitHub called %d times, want 1", got)
 	}
 }
 
-// If GitHub goes down the README should keep showing the last good numbers
-// rather than zeros.
-func TestStatsKeepsLastGoodValueOnFailure(t *testing.T) {
+// A cold start should inherit what a previous invocation already fetched.
+func TestColdStartReadsSharedCache(t *testing.T) {
+	cache := newMemCache()
+	var calls atomic.Int32
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `[{"fork":false,"stargazers_count":11}]`)
+	}
+
+	ctx := context.Background()
+	first := testClient(t, cache, handler)
+	if got := first.Stats(ctx).Stars; got != 11 {
+		t.Fatalf("stars = %d", got)
+	}
+	if cache.sets.Load() != 1 {
+		t.Errorf("expected the fetch to populate the cache, sets = %d", cache.sets.Load())
+	}
+
+	// A brand new client stands in for a fresh instance.
+	second := testClient(t, cache, handler)
+	if got := second.Stats(ctx).Stars; got != 11 {
+		t.Errorf("stars = %d from the shared cache", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("GitHub called %d times, want 1 with the cache warm", got)
+	}
+}
+
+func TestExpiredCacheIsRefetched(t *testing.T) {
+	cache := newMemCache()
+	stale := Stats{Repos: 1, Stars: 1, FetchedAt: time.Now().Add(-2 * time.Hour)}
+	if err := cache.SetCached(context.Background(), cacheKey, stale, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	c := testClient(t, cache, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"fork":false,"stargazers_count":99}]`)
+	})
+
+	if got := c.Stats(context.Background()).Stars; got != 99 {
+		t.Errorf("stars = %d, want the refetched value 99", got)
+	}
+}
+
+// If GitHub is down the README should keep showing the last good numbers.
+func TestFailureKeepsLastGoodValues(t *testing.T) {
 	var fail atomic.Bool
 
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		if fail.Load() {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
@@ -101,26 +184,27 @@ func TestStatsKeepsLastGoodValueOnFailure(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	stats, err := c.fetch(ctx)
-	if err != nil {
-		t.Fatalf("initial fetch: %v", err)
+	if got := c.Stats(ctx).Stars; got != 7 {
+		t.Fatalf("stars = %d on the first call", got)
 	}
+
+	// Expire the memo so the next call has to go out to the API.
 	c.mu.Lock()
-	c.cached, c.valid = stats, true
+	c.memo.FetchedAt = time.Now().Add(-time.Hour)
 	c.mu.Unlock()
-
 	fail.Store(true)
-	if _, err := c.fetch(ctx); err == nil {
-		t.Fatal("expected an error while the API is down")
-	}
 
-	if got := c.Stats(); got.Stars != 7 {
-		t.Errorf("stars = %d, want the last good value (7) to survive", got.Stars)
+	got := c.Stats(ctx)
+	if got.Stars != 7 {
+		t.Errorf("stars = %d, want the last good value 7", got.Stars)
+	}
+	if !got.Stale {
+		t.Error("the fallback should be flagged stale")
 	}
 }
 
 func TestRateLimitProducesClearError(t *testing.T) {
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", "1757520000")
 		w.WriteHeader(http.StatusForbidden)
@@ -136,7 +220,7 @@ func TestRateLimitProducesClearError(t *testing.T) {
 }
 
 func TestCommitsRequireToken(t *testing.T) {
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `[{"fork":false,"stargazers_count":1}]`)
 	})
 
@@ -149,24 +233,23 @@ func TestCommitsRequireToken(t *testing.T) {
 	}
 }
 
-func TestStartRefreshesInBackground(t *testing.T) {
-	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"fork":false,"stargazers_count":3}]`)
+// A broken cache must not break the service; it just costs an API call.
+func TestBrokenCacheStillServes(t *testing.T) {
+	c := testClient(t, failingCache{}, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"fork":false,"stargazers_count":5}]`)
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.Start(ctx)
-
-	deadline := time.After(5 * time.Second)
-	for {
-		if c.Stats().Stars == 3 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("background goroutine never populated the cache")
-		case <-time.After(10 * time.Millisecond):
-		}
+	if got := c.Stats(context.Background()).Stars; got != 5 {
+		t.Errorf("stars = %d, want 5 despite the cache being down", got)
 	}
+}
+
+type failingCache struct{}
+
+func (failingCache) GetCached(context.Context, string, any) (bool, error) {
+	return false, fmt.Errorf("cache unreachable")
+}
+
+func (failingCache) SetCached(context.Context, string, any, time.Duration) error {
+	return fmt.Errorf("cache unreachable")
 }

@@ -28,15 +28,15 @@ lint: ## gofmt check and go vet
 	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "files above are unformatted"; exit 1)
 	go vet ./...
 
-docker: ## Build the image locally
+docker: ## Build the self-hosting image
 	docker build --build-arg VERSION=$(VERSION) -t portfolio-backend:$(VERSION) .
 
-deploy: ## Ship to Fly.io
-	fly deploy --build-arg VERSION=$(VERSION)
+deploy: ## Ship to Vercel
+	vercel deploy --prod
 
 preview: ## Save preview.svg from the local server
 	curl -fsS "http://localhost:8080/terminal.svg" -o preview.svg
 	@echo "preview.svg written — open it in a browser to see the animation"
 
-clean: ## Remove build artefacts and the local database
-	rm -rf bin data cover.out cover.html preview.svg
+clean: ## Remove build artefacts
+	rm -rf bin cover.out cover.html preview.svg

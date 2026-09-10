@@ -1,9 +1,13 @@
 // Package githubapi fetches the public profile numbers.
 //
-// The README is served on every visit, but the GitHub API allows 60 requests
-// per hour without a token. So the numbers live in a cache refreshed by a
-// background goroutine: no HTTP request ever waits on GitHub, and an outage
-// there just leaves the last good values in place.
+// The GitHub API allows 60 requests an hour without a token, and the README is
+// served on every visit, so the numbers are cached in two layers: in the
+// instance's memory while it stays warm, and in Redis so a cold start inherits
+// what a previous invocation already fetched.
+//
+// Only the request that finds both layers empty pays for the API call. If that
+// call fails, whatever was cached keeps serving — a README with numbers from
+// half an hour ago beats a broken one.
 package githubapi
 
 import (
@@ -17,87 +21,109 @@ import (
 	"time"
 )
 
+const cacheKey = "github:stats"
+
 type Stats struct {
 	Repos      int       `json:"repos"`
 	Stars      int       `json:"stars"`
 	Commits    int       `json:"commits_this_year"`
-	HasCommits bool      `json:"-"` // contributions need a token; without one the column is dropped
+	HasCommits bool      `json:"has_commits"` // contributions need a token
 	FetchedAt  time.Time `json:"fetched_at"`
-	Stale      bool      `json:"stale"`
-	LastAPIErr string    `json:"last_error,omitempty"`
+
+	Stale      bool   `json:"-"`
+	LastAPIErr string `json:"-"`
+}
+
+func (s Stats) Age() time.Duration { return time.Since(s.FetchedAt) }
+
+// Cache is the slice of the store this package needs, kept narrow so tests can
+// run without one.
+type Cache interface {
+	GetCached(ctx context.Context, key string, dst any) (bool, error)
+	SetCached(ctx context.Context, key string, value any, ttl time.Duration) error
 }
 
 type Client struct {
-	user     string
-	token    string
-	interval time.Duration
-	log      *slog.Logger
-	http     *http.Client
-	baseURL  string // pointed at a local server in tests
+	user    string
+	token   string
+	ttl     time.Duration
+	cache   Cache
+	log     *slog.Logger
+	http    *http.Client
+	baseURL string // pointed at a local server in tests
 
-	mu     sync.RWMutex
-	cached Stats
-	valid  bool
+	mu   sync.RWMutex
+	memo Stats
 }
 
-func New(user, token string, interval time.Duration, log *slog.Logger) *Client {
+func New(user, token string, ttl time.Duration, cache Cache, log *slog.Logger) *Client {
 	return &Client{
-		user:     user,
-		token:    token,
-		interval: interval,
-		log:      log,
-		http:     &http.Client{Timeout: 8 * time.Second},
-		baseURL:  "https://api.github.com",
+		user:    user,
+		token:   token,
+		ttl:     ttl,
+		cache:   cache,
+		log:     log,
+		http:    &http.Client{Timeout: 8 * time.Second},
+		baseURL: "https://api.github.com",
 	}
 }
 
-// Stats returns the cached snapshot without touching the network, so the
-// response time printed in the SVG reflects only this service's own work.
-func (c *Client) Stats() Stats {
+func (c *Client) Stats(ctx context.Context) Stats {
+	if s, ok := c.fromMemo(); ok {
+		return s
+	}
+
+	if c.cache != nil {
+		var cached Stats
+		if found, err := c.cache.GetCached(ctx, cacheKey, &cached); err != nil {
+			c.log.Warn("reading stats cache", "err", err)
+		} else if found && time.Since(cached.FetchedAt) < c.ttl {
+			c.remember(cached)
+			return cached
+		}
+	}
+
+	fresh, err := c.fetch(ctx)
+	if err != nil {
+		c.log.Warn("github fetch failed", "err", err)
+		return c.lastResort(err)
+	}
+
+	c.remember(fresh)
+	if c.cache != nil {
+		if err := c.cache.SetCached(ctx, cacheKey, fresh, c.ttl); err != nil {
+			c.log.Warn("writing stats cache", "err", err)
+		}
+	}
+	return fresh
+}
+
+func (c *Client) fromMemo() (Stats, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if !c.valid {
-		return Stats{Stale: true, LastAPIErr: "not refreshed yet"}
+	if c.memo.FetchedAt.IsZero() || time.Since(c.memo.FetchedAt) >= c.ttl {
+		return Stats{}, false
 	}
-	stats := c.cached
-	// Well past the interval means refreshes have been failing quietly.
-	stats.Stale = time.Since(stats.FetchedAt) > 3*c.interval
-	return stats
+	return c.memo, true
 }
 
-// Start refreshes once and then every interval until ctx is cancelled. Errors
-// are logged and dropped: the previous values keep serving.
-func (c *Client) Start(ctx context.Context) {
-	refresh := func() {
-		reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
+func (c *Client) remember(s Stats) {
+	c.mu.Lock()
+	c.memo = s
+	c.mu.Unlock()
+}
 
-		fresh, err := c.fetch(reqCtx)
-		if err != nil {
-			c.log.Warn("github refresh failed", "err", err)
-			return
-		}
+// lastResort is reached when GitHub is unreachable: serve anything we still
+// hold, flagged so the SVG can say so.
+func (c *Client) lastResort(cause error) Stats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-		c.mu.Lock()
-		c.cached, c.valid = fresh, true
-		c.mu.Unlock()
-		c.log.Info("github stats refreshed", "repos", fresh.Repos, "stars", fresh.Stars)
-	}
-
-	go func() {
-		refresh()
-		ticker := time.NewTicker(c.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				refresh()
-			}
-		}
-	}()
+	stats := c.memo
+	stats.Stale = true
+	stats.LastAPIErr = cause.Error()
+	return stats
 }
 
 func (c *Client) fetch(ctx context.Context) (Stats, error) {
@@ -119,7 +145,7 @@ func (c *Client) fetch(ctx context.Context) (Stats, error) {
 			stats.Commits = commits
 			stats.HasCommits = true
 		} else {
-			stats.LastAPIErr = err.Error()
+			c.log.Warn("contributions unavailable", "err", err)
 		}
 	}
 	return stats, nil

@@ -60,25 +60,43 @@ func statsLines(d Data, p Palette) []line {
 	if d.Stats.HasCommits {
 		github = append(github, pair{"commits", humanInt(d.Stats.Commits), p.Yellow})
 	}
+
 	githubLine := pairsLine(github, p)
-	if d.Stats.Stale {
-		githubLine.segs = append(githubLine.segs, segment{"   (cached)", p.Dim})
+	// Only worth saying once the numbers have some age on them; "cached 0s" is
+	// noise on a request that just fetched them.
+	switch age := d.Stats.Age(); {
+	case d.Stats.Stale:
+		githubLine.segs = append(githubLine.segs, segment{"   (stale)", p.Orange})
+	case age >= time.Minute:
+		githubLine.segs = append(githubLine.segs, segment{
+			fmt.Sprintf("   (cached %s)", shortDur(age)), p.Dim,
+		})
 	}
 
+	// There is no uptime to report on a platform that discards the process
+	// between requests, so this says what is actually true of the invocation.
+	instance := "cold"
+	if !d.Cold {
+		instance = "warm"
+	}
 	runtime := pairsLine([]pair{
 		{"region", d.Region, p.Green},
-		{"up", shortDur(d.Uptime), p.Green},
+		{"instance", instance, p.Green},
 		{"served in", shortLatency(d.ServedIn), p.Green},
 	}, p)
 
-	views := line{segs: []segment{
-		{"> ", p.Dim},
-		{"readme views ", p.Dim},
-		{humanInt(d.Views.Total), p.Purple},
-		{fmt.Sprintf("  (+%s today)", humanInt(d.Views.Today)), p.Dim},
-	}}
+	lines := []line{githubLine, runtime}
 
-	return []line{githubLine, runtime, views}
+	// Without a configured store there is no counter to show.
+	if d.HasViews {
+		lines = append(lines, line{segs: []segment{
+			{"> ", p.Dim},
+			{"readme views ", p.Dim},
+			{humanInt(d.Views.Total), p.Purple},
+			{fmt.Sprintf("  (+%s today)", humanInt(d.Views.Today)), p.Dim},
+		}})
+	}
+	return lines
 }
 
 type pair struct {
@@ -122,7 +140,7 @@ func shortDur(d time.Duration) string {
 	case d >= time.Hour:
 		return fmt.Sprintf("%dh %dm", int(d.Minutes())/60, int(d.Minutes())%60)
 	case d >= time.Minute:
-		return fmt.Sprintf("%dm %ds", int(d.Seconds())/60, int(d.Seconds())%60)
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	default:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}

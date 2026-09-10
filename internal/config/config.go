@@ -1,13 +1,21 @@
-// Package config loads the terminal's editorial content from YAML, so changing
-// the bio or the stack doesn't mean rebuilding the binary.
+// Package config holds the terminal's editorial content.
+//
+// The YAML is embedded rather than read from disk: on a serverless platform the
+// function ships as a binary with no repository around it, and content changes
+// mean a redeploy anyway. CONFIG_PATH still overrides it, which is what makes
+// local iteration on the text quick.
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed profile.yaml
+var embedded []byte
 
 type Identity struct {
 	Name       string `yaml:"name"`
@@ -28,18 +36,24 @@ type Config struct {
 	Terminal Terminal `yaml:"terminal"`
 }
 
+// Load reads the config at path, or the embedded copy when path is empty.
 func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+	raw, source := embedded, "embedded profile.yaml"
+
+	if path != "" {
+		fromDisk, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		raw, source = fromDisk, path
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", source, err)
 	}
 	if err := cfg.validate(); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+		return nil, fmt.Errorf("invalid config %s: %w", source, err)
 	}
 	return &cfg, nil
 }

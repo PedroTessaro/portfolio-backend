@@ -1,13 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,27 +17,64 @@ import (
 	"github.com/PedroTessaro/portfolio-backend/internal/store"
 )
 
+// stubStats stands in for the GitHub client so the handlers never touch the
+// network.
+type stubStats struct{}
+
+func (stubStats) Stats(context.Context) githubapi.Stats {
+	return githubapi.Stats{Repos: 27, Stars: 9, FetchedAt: time.Now()}
+}
+
+// newTestServer builds a server with no counter configured, which is also the
+// path a deploy without KV credentials takes.
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
+	return newServerWith(t, nil)
+}
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+// newCountingServer backs the counter with a stub Redis that just increments.
+func newCountingServer(t *testing.T) http.Handler {
+	t.Helper()
+
+	var total, today atomic.Int64
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var commands [][]string
+		if err := json.NewDecoder(r.Body).Decode(&commands); err != nil {
+			t.Errorf("decoding redis commands: %v", err)
+			return
+		}
+		replies := make([]map[string]any, 0, len(commands))
+		for _, cmd := range commands {
+			counter := &total
+			if strings.HasPrefix(cmd[1], "views:day:") {
+				counter = &today
+			}
+			if cmd[0] == "INCR" {
+				replies = append(replies, map[string]any{"result": float64(counter.Add(1))})
+				continue
+			}
+			replies = append(replies, map[string]any{"result": float64(counter.Load())})
+		}
+		json.NewEncoder(w).Encode(replies)
+	}))
+	t.Cleanup(stub.Close)
+
+	return newServerWith(t, store.New(stub.URL, "stub-token"))
+}
+
+func newServerWith(t *testing.T, kv *store.Store) http.Handler {
+	t.Helper()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// The client is never started, so Stats() returns the empty snapshot and we
-	// exercise the path where GitHub hasn't answered yet.
 	return New(Options{
 		Config: &config.Config{
 			Identity: config.Identity{Name: "Pedro Tessaro", Role: "Backend Engineer", Location: "Brazil", GitHubUser: "PedroTessaro"},
 			Stack:    []string{"Go", "Java"},
 			Terminal: config.Terminal{Host: "example.fly.dev", User: "tessaro", Machine: "portfolio"},
 		},
-		GitHub:  githubapi.New("PedroTessaro", "", time.Minute, log),
-		Store:   db,
+		GitHub:  stubStats{},
+		Store:   kv,
 		Logger:  log,
 		Region:  "gru",
 		Version: "test",
@@ -88,7 +126,7 @@ func TestTerminalWorksWithoutGitHubData(t *testing.T) {
 }
 
 func TestTerminalCountsViews(t *testing.T) {
-	h := newTestServer(t)
+	h := newCountingServer(t)
 	for i := 0; i < 3; i++ {
 		get(t, h, "/terminal.svg")
 	}
@@ -132,10 +170,23 @@ func TestWhoamiIsValidJSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	for _, key := range []string{"name", "role", "stack", "github", "readme_views", "server"} {
+	for _, key := range []string{"name", "role", "stack", "github", "server"} {
 		if _, ok := payload[key]; !ok {
 			t.Errorf("missing key %q", key)
 		}
+	}
+	if _, ok := payload["readme_views"]; ok {
+		t.Error("readme_views should be absent when no counter is configured")
+	}
+}
+
+// Without KV the views line has to disappear rather than render zeros.
+func TestViewsLineOmittedWithoutStore(t *testing.T) {
+	if body := get(t, newTestServer(t), "/terminal.svg").Body.String(); strings.Contains(body, "readme views") {
+		t.Error("views line should be dropped when the counter is disabled")
+	}
+	if body := get(t, newCountingServer(t), "/terminal.svg").Body.String(); !strings.Contains(body, "readme views") {
+		t.Error("views line should render when the counter is configured")
 	}
 }
 
@@ -153,9 +204,9 @@ func TestMetricsExposesPrometheusFormat(t *testing.T) {
 	body := get(t, newTestServer(t), "/metrics").Body.String()
 
 	for _, want := range []string{
-		"# HELP portfolio_uptime_seconds",
+		"# HELP portfolio_github_repos",
 		"# TYPE portfolio_requests_total counter",
-		"portfolio_readme_views_total",
+		"portfolio_github_cache_age_seconds",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q", want)

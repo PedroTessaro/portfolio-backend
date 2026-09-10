@@ -24,10 +24,10 @@ func testData() Data {
 			Stack:    []string{"Go", "Java", "C/C++"},
 			Terminal: config.Terminal{Host: "example.fly.dev", User: "tessaro", Machine: "portfolio"},
 		},
-		Stats:    githubapi.Stats{Repos: 27, Stars: 9, Commits: 412, HasCommits: true},
+		Stats:    githubapi.Stats{Repos: 27, Stars: 9, Commits: 412, HasCommits: true, FetchedAt: time.Now()},
 		Views:    store.Views{Total: 1234, Today: 37},
+		HasViews: true,
 		Region:   "gru",
-		Uptime:   50 * time.Hour,
 		ServedIn: 8 * time.Millisecond,
 	}
 }
@@ -71,7 +71,6 @@ func TestRenderIncludesLiveData(t *testing.T) {
 		"1,234",
 		"gru",
 		"8ms",
-		"2d 2h",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("SVG is missing %q", want)
@@ -149,7 +148,7 @@ func TestShortDur(t *testing.T) {
 		want string
 	}{
 		{45 * time.Second, "45s"},
-		{90 * time.Second, "1m 30s"},
+		{90 * time.Second, "1m"},
 		{3 * time.Hour, "3h 0m"},
 		{50 * time.Hour, "2d 2h"},
 	} {

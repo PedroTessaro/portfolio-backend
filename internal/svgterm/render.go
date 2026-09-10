@@ -48,8 +48,9 @@ type Data struct {
 	Cfg      *config.Config
 	Stats    githubapi.Stats
 	Views    store.Views
+	HasViews bool
 	Region   string
-	Uptime   time.Duration
+	Cold     bool // this invocation started a fresh instance
 	ServedIn time.Duration
 
 	// Static draws the final frame with no SMIL, for renderers that ignore
