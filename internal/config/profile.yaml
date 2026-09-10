@@ -6,6 +6,7 @@ identity:
   location: "Brazil"
   github_user: "PedroTessaro"
   tagline: "CS student · piano teacher"
+  availability: "open to backend roles · remote or São Paulo · EN/PT"
 
 stack:
   - "Go"

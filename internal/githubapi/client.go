@@ -31,6 +31,7 @@ type Stats struct {
 	Commits    int       `json:"commits_this_year"`
 	HasCommits bool      `json:"has_commits"` // contributions need a token
 	Projects   []Project `json:"projects"`
+	Last       Commit    `json:"last_commit"`
 	FetchedAt  time.Time `json:"fetched_at"`
 
 	Stale      bool   `json:"-"`
@@ -45,6 +46,16 @@ type Project struct {
 	Stars    int       `json:"stars"`
 	PushedAt time.Time `json:"pushed_at"`
 }
+
+// Commit is the most recent push, shown so the profile proves it is alive
+// rather than claiming it.
+type Commit struct {
+	Message string    `json:"message"`
+	Repo    string    `json:"repo"`
+	At      time.Time `json:"at"`
+}
+
+func (c Commit) Empty() bool { return c.Message == "" }
 
 func (s Stats) Age() time.Duration { return time.Since(s.FetchedAt) }
 
@@ -155,6 +166,14 @@ func (c *Client) fetch(ctx context.Context) (Stats, error) {
 		stats.Stars += r.Stars
 	}
 
+	// Both of the following are extras: a failure costs one line of the SVG,
+	// never the whole render.
+	if last, err := c.fetchLastCommit(ctx); err == nil {
+		stats.Last = last
+	} else {
+		c.log.Warn("last commit unavailable", "err", err)
+	}
+
 	// Contributions only exist on the GraphQL API, which requires auth. Without
 	// a token the rest of the numbers are still fine.
 	if c.token != "" {
@@ -233,6 +252,45 @@ func (c *Client) featuredFrom(repos []repo) []Project {
 		return projects[i].PushedAt.After(projects[j].PushedAt)
 	})
 	return projects
+}
+
+// fetchLastCommit reads the public event feed, which already carries the commit
+// message — cheaper than finding the newest repo and then asking for its head.
+func (c *Client) fetchLastCommit(ctx context.Context) (Commit, error) {
+	var events []struct {
+		Type      string    `json:"type"`
+		CreatedAt time.Time `json:"created_at"`
+		Repo      struct {
+			Name string `json:"name"`
+		} `json:"repo"`
+		Payload struct {
+			Commits []struct {
+				Message string `json:"message"`
+			} `json:"commits"`
+		} `json:"payload"`
+	}
+
+	url := fmt.Sprintf("%s/users/%s/events/public?per_page=100", c.baseURL, c.user)
+	if err := c.getJSON(ctx, url, &events); err != nil {
+		return Commit{}, err
+	}
+
+	for _, e := range events {
+		if e.Type != "PushEvent" || len(e.Payload.Commits) == 0 {
+			continue
+		}
+		// A push carries its commits oldest first, so the newest is last.
+		message := e.Payload.Commits[len(e.Payload.Commits)-1].Message
+		if i := strings.IndexByte(message, '\n'); i >= 0 {
+			message = message[:i] // subject line only
+		}
+		return Commit{
+			Message: strings.TrimSpace(message),
+			Repo:    strings.TrimPrefix(e.Repo.Name, c.user+"/"),
+			At:      e.CreatedAt,
+		}, nil
+	}
+	return Commit{}, fmt.Errorf("no push events in the recent feed")
 }
 
 func (c *Client) fetchContributions(ctx context.Context) (int, error) {

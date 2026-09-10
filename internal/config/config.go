@@ -18,11 +18,12 @@ import (
 var embedded []byte
 
 type Identity struct {
-	Name       string `yaml:"name"`
-	Role       string `yaml:"role"`
-	Location   string `yaml:"location"`
-	GitHubUser string `yaml:"github_user"`
-	Tagline    string `yaml:"tagline"` // optional third line under the name
+	Name         string `yaml:"name"`
+	Role         string `yaml:"role"`
+	Location     string `yaml:"location"`
+	GitHubUser   string `yaml:"github_user"`
+	Tagline      string `yaml:"tagline"`      // optional third line under the name
+	Availability string `yaml:"availability"` // optional, the line recruiters filter on
 }
 
 type Terminal struct {

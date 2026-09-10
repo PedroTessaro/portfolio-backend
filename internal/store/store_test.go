@@ -6,11 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
 
-// fakeRedis answers the pipeline endpoint, recording the commands it received.
+// fakeRedis answers the pipeline endpoint from a per-command reply function.
 func fakeRedis(t *testing.T, reply func(commands [][]string) []map[string]any) *Store {
 	t.Helper()
 
@@ -31,68 +32,161 @@ func fakeRedis(t *testing.T, reply func(commands [][]string) []map[string]any) *
 	return &Store{baseURL: srv.URL, token: "test-token", http: srv.Client()}
 }
 
-func TestHitIncrementsBothCounters(t *testing.T) {
-	var seen [][]string
-
-	s := fakeRedis(t, func(commands [][]string) []map[string]any {
-		seen = commands
-		return []map[string]any{{"result": 42.0}, {"result": 7.0}}
-	})
-
-	views, err := s.Hit(context.Background(), time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("Hit: %v", err)
+// replyPerCommand gives each command a plausible answer so tests can focus on
+// the one thing they care about.
+func replyPerCommand(commands [][]string, overrides map[string]any) []map[string]any {
+	replies := make([]map[string]any, 0, len(commands))
+	for _, cmd := range commands {
+		if v, ok := overrides[cmd[0]]; ok {
+			replies = append(replies, map[string]any{"result": v})
+			continue
+		}
+		switch cmd[0] {
+		case "INCR":
+			replies = append(replies, map[string]any{"result": 1.0})
+		case "LRANGE":
+			replies = append(replies, map[string]any{"result": []any{}})
+		default:
+			replies = append(replies, map[string]any{"result": nil})
+		}
 	}
-	if views.Total != 42 || views.Today != 7 {
-		t.Errorf("got total=%d today=%d, want 42 and 7", views.Total, views.Today)
-	}
-
-	if len(seen) != 2 {
-		t.Fatalf("sent %d commands, want 2 in one pipeline", len(seen))
-	}
-	if seen[0][0] != "INCR" || seen[1][0] != "INCR" {
-		t.Errorf("expected two INCRs, got %v", seen)
-	}
-	if seen[1][1] != "views:day:2026-09-10" {
-		t.Errorf("day key = %q", seen[1][1])
-	}
+	return replies
 }
 
-func TestSnapshotReadsWithoutWriting(t *testing.T) {
+func TestRecordCountsAndReadsInOneRoundTrip(t *testing.T) {
+	var trips int
 	var seen [][]string
 
 	s := fakeRedis(t, func(commands [][]string) []map[string]any {
+		trips++
 		seen = commands
-		return []map[string]any{{"result": "1234"}, {"result": "37"}}
+		return replyPerCommand(commands, map[string]any{"INCR": 42.0})
 	})
 
-	views, err := s.Snapshot(context.Background(), time.Now())
+	snap, err := s.Record(context.Background(), time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC), 1500*time.Microsecond)
 	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
+		t.Fatalf("Record: %v", err)
 	}
-	// GET returns strings where INCR returns numbers.
-	if views.Total != 1234 || views.Today != 37 {
-		t.Errorf("got total=%d today=%d, want 1234 and 37", views.Total, views.Today)
+	if trips != 1 {
+		t.Errorf("made %d round trips, want 1 — the pipeline exists to avoid this", trips)
 	}
+	if snap.Views.Total != 42 {
+		t.Errorf("total = %d, want 42", snap.Views.Total)
+	}
+
+	var kinds []string
 	for _, cmd := range seen {
-		if cmd[0] != "GET" {
-			t.Errorf("Snapshot issued %q, it must not write", cmd[0])
+		kinds = append(kinds, cmd[0])
+	}
+	for _, want := range []string{"INCR", "LPUSH", "LTRIM", "LRANGE", "GET"} {
+		found := false
+		for _, k := range kinds {
+			if k == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("pipeline missing %s, got %v", want, kinds)
 		}
 	}
 }
 
-// A day with no visits yet has no key at all.
-func TestMissingKeysCountAsZero(t *testing.T) {
-	s := fakeRedis(t, func([][]string) []map[string]any {
-		return []map[string]any{{"result": nil}, {"result": nil}}
+// The first request an instance serves has nothing buffered yet.
+func TestRecordSkipsPushWithoutASample(t *testing.T) {
+	var seen [][]string
+	s := fakeRedis(t, func(commands [][]string) []map[string]any {
+		seen = commands
+		return replyPerCommand(commands, nil)
 	})
 
-	views, err := s.Snapshot(context.Background(), time.Now())
-	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
+	if _, err := s.Record(context.Background(), time.Now(), 0); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
-	if views.Total != 0 || views.Today != 0 {
-		t.Errorf("got total=%d today=%d, want zeros", views.Total, views.Today)
+	for _, cmd := range seen {
+		if cmd[0] == "LPUSH" {
+			t.Error("nothing to sample, so nothing should be pushed")
+		}
+	}
+}
+
+func TestReadDoesNotWrite(t *testing.T) {
+	var seen [][]string
+	s := fakeRedis(t, func(commands [][]string) []map[string]any {
+		seen = commands
+		return replyPerCommand(commands, map[string]any{"GET": "1234"})
+	})
+
+	if _, err := s.Read(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for _, cmd := range seen {
+		switch cmd[0] {
+		case "INCR", "LPUSH", "LTRIM", "SET":
+			t.Errorf("Read issued %q, it must not write", cmd[0])
+		}
+	}
+}
+
+func TestPercentilesFromWindow(t *testing.T) {
+	// 1..100 ms, so the nearest-rank p50 and p95 are easy to state.
+	samples := make([]any, 0, 100)
+	for i := 1; i <= 100; i++ {
+		samples = append(samples, strconv.Itoa(i*1000))
+	}
+
+	got := percentiles(samples)
+	if got.Samples != 100 {
+		t.Errorf("samples = %d, want 100", got.Samples)
+	}
+	if got.P50 != 51*time.Millisecond {
+		t.Errorf("p50 = %v, want 51ms", got.P50)
+	}
+	if got.P95 != 96*time.Millisecond {
+		t.Errorf("p95 = %v, want 96ms", got.P95)
+	}
+}
+
+func TestPercentilesOnEmptyWindow(t *testing.T) {
+	if got := percentiles([]any{}); got.Samples != 0 || got.P95 != 0 {
+		t.Errorf("empty window gave %+v, want zeros", got)
+	}
+	if got := percentiles(nil); got.Samples != 0 {
+		t.Errorf("nil window gave %+v, want zeros", got)
+	}
+}
+
+func TestDecodeCI(t *testing.T) {
+	raw := `{"status":"passing","sha":"abc1234","tests":55,"coverage":83.4,"finished_at":"2026-09-10T12:00:00Z"}`
+
+	got, ok := decodeCI(raw)
+	if !ok {
+		t.Fatal("expected a decoded status")
+	}
+	if got.Status != "passing" || got.Tests != 55 || got.Coverage != 83.4 {
+		t.Errorf("decoded %+v", got)
+	}
+}
+
+// Nothing published yet, or garbage in the key: the CI line just disappears.
+func TestDecodeCIRejectsJunk(t *testing.T) {
+	for _, raw := range []any{nil, "", "not json", `{"tests":5}`} {
+		if _, ok := decodeCI(raw); ok {
+			t.Errorf("decodeCI(%v) reported success", raw)
+		}
+	}
+}
+
+func TestMissingKeysCountAsZero(t *testing.T) {
+	s := fakeRedis(t, func(commands [][]string) []map[string]any {
+		return replyPerCommand(commands, map[string]any{"GET": nil})
+	})
+
+	snap, err := s.Read(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if snap.Views.Total != 0 || snap.HasCI {
+		t.Errorf("empty redis gave %+v", snap)
 	}
 }
 
@@ -149,13 +243,13 @@ func TestRedisErrorSurfaces(t *testing.T) {
 		return []map[string]any{{"error": "WRONGTYPE"}}
 	})
 
-	if _, err := s.Snapshot(context.Background(), time.Now()); err == nil {
+	if _, err := s.Read(context.Background(), time.Now()); err == nil {
 		t.Error("expected the redis error to surface")
 	}
 }
 
 // Without credentials every call has to degrade quietly, since the service is
-// meant to run with the counter switched off.
+// meant to run with the store switched off.
 func TestNilStoreIsSafe(t *testing.T) {
 	var s *Store
 	ctx := context.Background()
@@ -163,11 +257,11 @@ func TestNilStoreIsSafe(t *testing.T) {
 	if s.Enabled() {
 		t.Error("a nil store should report itself disabled")
 	}
-	if _, err := s.Hit(ctx, time.Now()); err != nil {
-		t.Errorf("Hit on nil store: %v", err)
+	if _, err := s.Record(ctx, time.Now(), time.Millisecond); err != nil {
+		t.Errorf("Record on nil store: %v", err)
 	}
-	if _, err := s.Snapshot(ctx, time.Now()); err != nil {
-		t.Errorf("Snapshot on nil store: %v", err)
+	if _, err := s.Read(ctx, time.Now()); err != nil {
+		t.Errorf("Read on nil store: %v", err)
 	}
 	if err := s.SetCached(ctx, "k", 1, time.Minute); err != nil {
 		t.Errorf("SetCached on nil store: %v", err)

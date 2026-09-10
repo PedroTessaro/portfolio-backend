@@ -1,13 +1,14 @@
 // Package store keeps the state that has to outlive a single invocation: the
-// README view counter and the cached GitHub numbers.
+// README view counter, a rolling window of response times, and whatever the CI
+// last published about itself.
 //
 // Serverless functions have no disk and no shared memory, so this talks to a
-// Redis over its HTTP API — no driver, no connection pool, and nothing to keep
-// warm between invocations.
+// Redis over its HTTP API — no driver, no connection pool, nothing to keep warm.
+// Every read the SVG needs travels in one pipelined round trip, because that
+// round trip is on the request path and shows up in the latency the SVG prints.
 //
 // The store is optional. With no credentials configured the service still
-// serves the SVG; it just drops the view counter, the same way the commits
-// column disappears without a GitHub token.
+// serves the SVG; it just drops the lines it can no longer fill in.
 package store
 
 import (
@@ -17,9 +18,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 )
+
+// How many response times to keep. Enough for a stable p95, small enough that
+// pulling the whole window back costs little.
+const sampleWindow = 500
 
 type Store struct {
 	baseURL string
@@ -32,9 +38,30 @@ type Views struct {
 	Today int
 }
 
-// FromEnv builds a store from the variables Vercel's Upstash integration
-// injects. It returns nil when they are absent, which callers treat as
-// "counter disabled" rather than an error.
+// Latency is the percentile view of the rolling window.
+type Latency struct {
+	P50     time.Duration
+	P95     time.Duration
+	Samples int
+}
+
+// CIStatus is written by the GitHub Actions workflow, never by this service.
+type CIStatus struct {
+	Status     string    `json:"status"`
+	SHA        string    `json:"sha"`
+	Tests      int       `json:"tests"`
+	Coverage   float64   `json:"coverage"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// Snapshot is everything the SVG needs from Redis, fetched together.
+type Snapshot struct {
+	Views   Views
+	Latency Latency
+	CI      CIStatus
+	HasCI   bool
+}
+
 func FromEnv() *Store {
 	url, token := os.Getenv("KV_REST_API_URL"), os.Getenv("KV_REST_API_TOKEN")
 	if url == "" || token == "" {
@@ -55,38 +82,65 @@ func New(baseURL, token string) *Store {
 
 func (s *Store) Enabled() bool { return s != nil }
 
-// Hit records a visit and returns the counters including it. INCR replies with
-// the new value, so one round trip both writes and reads.
-func (s *Store) Hit(ctx context.Context, now time.Time) (Views, error) {
+// Record counts a visit and returns everything the render needs.
+//
+// sample is the duration of the *previous* request this instance served, not
+// the current one — the current one isn't over yet, and measuring it would mean
+// a second round trip after the response was already written, which a frozen
+// serverless instance may never get to make. The cost of doing it this way is
+// that the last request before an instance goes idle never lands in the window.
+func (s *Store) Record(ctx context.Context, now time.Time, sample time.Duration) (Snapshot, error) {
 	if !s.Enabled() {
-		return Views{}, nil
+		return Snapshot{}, nil
 	}
 
-	results, err := s.pipeline(ctx, [][]string{
+	commands := [][]string{
 		{"INCR", keyTotal},
 		{"INCR", keyDay(now)},
-	})
-	if err != nil {
-		return Views{}, err
 	}
-	return Views{Total: asInt(results[0]), Today: asInt(results[1])}, nil
+	if sample > 0 {
+		commands = append(commands,
+			[]string{"LPUSH", keyLatency, strconv.FormatInt(sample.Microseconds(), 10)},
+			[]string{"LTRIM", keyLatency, "0", strconv.Itoa(sampleWindow - 1)},
+		)
+	}
+	commands = append(commands,
+		[]string{"LRANGE", keyLatency, "0", strconv.Itoa(sampleWindow - 1)},
+		[]string{"GET", keyCI},
+	)
+
+	results, err := s.pipeline(ctx, commands)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	snap := Snapshot{Views: Views{Total: asInt(results[0]), Today: asInt(results[1])}}
+	snap.Latency = percentiles(results[len(results)-2])
+	snap.CI, snap.HasCI = decodeCI(results[len(results)-1])
+	return snap, nil
 }
 
-// Snapshot reads without incrementing, so /whoami and /metrics don't inflate
-// the README view count.
-func (s *Store) Snapshot(ctx context.Context, now time.Time) (Views, error) {
+// Read is Record without the write, for endpoints that must not inflate the
+// counter.
+func (s *Store) Read(ctx context.Context, now time.Time) (Snapshot, error) {
 	if !s.Enabled() {
-		return Views{}, nil
+		return Snapshot{}, nil
 	}
 
 	results, err := s.pipeline(ctx, [][]string{
 		{"GET", keyTotal},
 		{"GET", keyDay(now)},
+		{"LRANGE", keyLatency, "0", strconv.Itoa(sampleWindow - 1)},
+		{"GET", keyCI},
 	})
 	if err != nil {
-		return Views{}, err
+		return Snapshot{}, err
 	}
-	return Views{Total: asInt(results[0]), Today: asInt(results[1])}, nil
+
+	snap := Snapshot{Views: Views{Total: asInt(results[0]), Today: asInt(results[1])}}
+	snap.Latency = percentiles(results[2])
+	snap.CI, snap.HasCI = decodeCI(results[3])
+	return snap, nil
 }
 
 // GetCached reads a JSON value written by SetCached. A miss is (false, nil):
@@ -125,9 +179,55 @@ func (s *Store) SetCached(ctx context.Context, key string, value any, ttl time.D
 	return err
 }
 
-const keyTotal = "views:total"
+const (
+	keyTotal   = "views:total"
+	keyLatency = "latency:samples"
+	keyCI      = "ci:status"
+)
 
 func keyDay(now time.Time) string { return "views:day:" + now.UTC().Format("2006-01-02") }
+
+// percentiles turns the raw LRANGE reply into p50 and p95. Nearest-rank, which
+// is the honest method for a few hundred samples.
+func percentiles(raw any) Latency {
+	values, ok := raw.([]any)
+	if !ok || len(values) == 0 {
+		return Latency{}
+	}
+
+	micros := make([]int, 0, len(values))
+	for _, v := range values {
+		if n := asInt(v); n > 0 {
+			micros = append(micros, n)
+		}
+	}
+	if len(micros) == 0 {
+		return Latency{}
+	}
+	sort.Ints(micros)
+
+	at := func(q float64) time.Duration {
+		i := int(q * float64(len(micros)))
+		if i >= len(micros) {
+			i = len(micros) - 1
+		}
+		return time.Duration(micros[i]) * time.Microsecond
+	}
+	return Latency{P50: at(0.50), P95: at(0.95), Samples: len(micros)}
+}
+
+func decodeCI(raw any) (CIStatus, bool) {
+	encoded, ok := raw.(string)
+	if !ok || encoded == "" {
+		return CIStatus{}, false
+	}
+
+	var status CIStatus
+	if err := json.Unmarshal([]byte(encoded), &status); err != nil {
+		return CIStatus{}, false
+	}
+	return status, status.Status != ""
+}
 
 // pipeline sends several commands in one request and returns their results in
 // order. Batching matters here: every round trip is paid on the request path.

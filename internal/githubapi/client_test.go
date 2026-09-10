@@ -21,9 +21,18 @@ func testClient(t *testing.T, cache Cache, handler http.HandlerFunc) *Client {
 	return featuringClient(t, nil, cache, handler)
 }
 
-func featuringClient(t *testing.T, featured []string, cache Cache, handler http.HandlerFunc) *Client {
+// featuringClient routes /repos to the given handler and stubs the rest, so a
+// test that counts calls is counting the ones it meant to.
+func featuringClient(t *testing.T, featured []string, cache Cache, repos http.HandlerFunc) *Client {
 	t.Helper()
-	srv := httptest.NewServer(handler)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/events") {
+			fmt.Fprint(w, `[]`) // no push events; the commit line is simply dropped
+			return
+		}
+		repos(w, r)
+	}))
 	t.Cleanup(srv.Close)
 
 	c := New("PedroTessaro", "", featured, 15*time.Minute, cache, discardLogger())

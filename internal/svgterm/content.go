@@ -34,6 +34,16 @@ func buildLines(d Data, p Palette) []line {
 		lines = append(lines, projectLines(d.Stats.Projects, p)...)
 	}
 
+	if !d.Stats.Last.Empty() {
+		lines = append(lines, line{}, line{typed: true, segs: []segment{
+			{"$ ", p.Green},
+			{"git", p.Blue},
+			{" log -1 ", p.Foreground},
+			{"--oneline", p.Orange},
+		}})
+		lines = append(lines, commitLines(d.Stats.Last, p)...)
+	}
+
 	lines = append(lines, line{}, line{typed: true, segs: []segment{
 		{"$ ", p.Green},
 		{"./stats", p.Blue},
@@ -60,7 +70,30 @@ func whoamiLines(d Data, p Palette) []line {
 	if extra := joinNonEmpty(" · ", id.Location, id.Tagline); extra != "" {
 		lines = append(lines, line{segs: []segment{{"> ", p.Dim}, {extra, p.Dim}}})
 	}
+	// The one line a recruiter is actually scanning for, so it gets a colour
+	// rather than the dim treatment the rest of the metadata gets.
+	if id.Availability != "" {
+		lines = append(lines, line{segs: []segment{{"> ", p.Dim}, {id.Availability, p.Green}}})
+	}
 	return lines
+}
+
+// commitLines is the proof-of-life block: the most recent push, with its real
+// message.
+func commitLines(last githubapi.Commit, p Palette) []line {
+	const maxMessage = 46
+
+	message := last.Message
+	if runeLen(message) > maxMessage {
+		message = string([]rune(message)[:maxMessage-1]) + "…"
+	}
+
+	return []line{{segs: []segment{
+		{"> ", p.Dim},
+		{last.Repo + "  ", p.Cyan},
+		{message, p.Foreground},
+		{"  " + sinceRoughly(last.At), p.Dim},
+	}}}
 }
 
 func stackLine(stack []string, p Palette) []segment {
@@ -124,17 +157,46 @@ func statsLines(d Data, p Palette) []line {
 		})
 	}
 
+	lines := []line{githubLine}
+
+	// Written by the CI workflow, never by this service — so the numbers are
+	// whatever the last run on main actually measured.
+	if d.HasCI {
+		status, statusColor := d.CI.Status, p.Green
+		if status != "passing" {
+			statusColor = p.Red
+		}
+		lines = append(lines, line{segs: []segment{
+			{"> ", p.Dim},
+			{"ci ", p.Dim},
+			{status, statusColor},
+			{"   tests ", p.Dim},
+			{strconv.Itoa(d.CI.Tests), p.Yellow},
+			{"   coverage ", p.Dim},
+			{fmt.Sprintf("%.0f%%", d.CI.Coverage), p.Yellow},
+		}})
+	}
+
+	// Percentiles over the rolling window of real requests, not a benchmark.
+	if d.Latency.Samples > 0 {
+		lines = append(lines, pairsLine([]pair{
+			{"p50", shortLatency(d.Latency.P50), p.Purple},
+			{"p95", shortLatency(d.Latency.P95), p.Purple},
+			{"n", humanInt(d.Latency.Samples), p.Purple},
+		}, p))
+	}
+
 	// There is no uptime to report on a platform that discards the process
 	// between requests, so this says what is actually true of the invocation.
 	instance := "cold"
 	if !d.Cold {
 		instance = "warm"
 	}
-	lines := []line{githubLine, pairsLine([]pair{
+	lines = append(lines, pairsLine([]pair{
 		{"region", d.Region, p.Green},
 		{"instance", instance, p.Green},
 		{"served in", shortLatency(d.ServedIn), p.Green},
-	}, p)}
+	}, p))
 
 	// Without a configured store there is no counter to show.
 	if d.HasViews {

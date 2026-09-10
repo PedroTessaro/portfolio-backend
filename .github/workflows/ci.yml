@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test -race -coverprofile=cover.out ./...
+
+      # The terminal claims a test count and a coverage figure. This is where
+      # those numbers come from — nobody types them anywhere.
+      - name: publish results
+        if: github.ref == 'refs/heads/main'
+        env:
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+        run: |
+          tests=$(go test ./... -list '.*' 2>/dev/null | grep -c '^Test' || true)
+          coverage=$(go tool cover -func=cover.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+
+          payload=$(jq -nc \
+            --arg sha "${GITHUB_SHA:0:7}" \
+            --argjson tests "${tests:-0}" \
+            --argjson coverage "${coverage:-0}" \
+            --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{status:"passing", sha:$sha, tests:$tests, coverage:$coverage, finished_at:$finished_at}')
+
+          curl -fsS -X POST "$KV_REST_API_URL/pipeline" \
+            -H "Authorization: Bearer $KV_REST_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg p "$payload" '[["SET","ci:status",$p]]')" > /dev/null
+
+          echo "published: $payload"

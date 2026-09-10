@@ -49,6 +49,9 @@ type Data struct {
 	Stats    githubapi.Stats
 	Views    store.Views
 	HasViews bool
+	Latency  store.Latency
+	CI       store.CIStatus
+	HasCI    bool
 	Region   string
 	Cold     bool // this invocation started a fresh instance
 	ServedIn time.Duration

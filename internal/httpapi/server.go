@@ -31,6 +31,10 @@ type Server struct {
 	version string
 
 	requests atomic.Int64
+
+	// Duration of the last request this instance finished, in microseconds.
+	// It rides along on the next request's Redis round trip; see store.Record.
+	lastDuration atomic.Int64
 }
 
 type Options struct {
@@ -87,8 +91,9 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	cold := s.firstRequest()
 
-	// A failing counter must not take the README down with it.
-	views, err := s.store.Hit(r.Context(), start)
+	// A failing store must not take the README down with it.
+	pending := time.Duration(s.lastDuration.Load()) * time.Microsecond
+	snap, err := s.store.Record(r.Context(), start, pending)
 	if err != nil {
 		s.log.Error("recording visit", "err", err)
 	}
@@ -96,8 +101,11 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	data := svgterm.Data{
 		Cfg:      s.cfg,
 		Stats:    s.github.Stats(r.Context()),
-		Views:    views,
+		Views:    snap.Views,
 		HasViews: s.store.Enabled(),
+		Latency:  snap.Latency,
+		CI:       snap.CI,
+		HasCI:    snap.HasCI,
 		Region:   s.region,
 		Cold:     cold,
 		ServedIn: time.Since(start),
@@ -117,6 +125,10 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(svg); err != nil {
 		s.log.Error("writing svg", "err", err)
 	}
+
+	// Handed to the next request rather than written now: this instance may be
+	// frozen the moment the response is flushed.
+	s.lastDuration.Store(time.Since(start).Microseconds())
 }
 
 // handleWhoami answers the request the terminal claims to make, so the command
@@ -125,9 +137,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	stats := s.github.Stats(r.Context())
 
-	views, err := s.store.Snapshot(r.Context(), start)
+	snap, err := s.store.Read(r.Context(), start)
 	if err != nil {
-		s.log.Error("reading counter", "err", err)
+		s.log.Error("reading store", "err", err)
 	}
 
 	payload := map[string]any{
@@ -153,7 +165,15 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if s.store.Enabled() {
-		payload["readme_views"] = map[string]int{"total": views.Total, "today": views.Today}
+		payload["readme_views"] = map[string]int{"total": snap.Views.Total, "today": snap.Views.Today}
+		payload["latency"] = map[string]any{
+			"p50":     snap.Latency.P50.Round(time.Microsecond).String(),
+			"p95":     snap.Latency.P95.Round(time.Microsecond).String(),
+			"samples": snap.Latency.Samples,
+		}
+	}
+	if snap.HasCI {
+		payload["ci"] = snap.CI
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -179,9 +199,9 @@ type metric struct {
 // pick this up unmodified.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	stats := s.github.Stats(r.Context())
-	views, err := s.store.Snapshot(r.Context(), time.Now())
+	snap, err := s.store.Read(r.Context(), time.Now())
 	if err != nil {
-		s.log.Error("reading counter", "err", err)
+		s.log.Error("reading store", "err", err)
 	}
 
 	metrics := []metric{
@@ -192,8 +212,16 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store.Enabled() {
 		metrics = append(metrics,
-			metric{"portfolio_readme_views_total", "README SVG renders.", "counter", int64(views.Total)},
-			metric{"portfolio_readme_views_today", "README SVG renders today, UTC.", "gauge", int64(views.Today)},
+			metric{"portfolio_readme_views_total", "README SVG renders.", "counter", int64(snap.Views.Total)},
+			metric{"portfolio_readme_views_today", "README SVG renders today, UTC.", "gauge", int64(snap.Views.Today)},
+			metric{"portfolio_latency_p50_microseconds", "Median response time over the rolling window.", "gauge", snap.Latency.P50.Microseconds()},
+			metric{"portfolio_latency_p95_microseconds", "95th percentile response time over the rolling window.", "gauge", snap.Latency.P95.Microseconds()},
+		)
+	}
+	if snap.HasCI {
+		metrics = append(metrics,
+			metric{"portfolio_ci_tests", "Tests run by the last CI build on main.", "gauge", int64(snap.CI.Tests)},
+			metric{"portfolio_ci_coverage_percent", "Statement coverage from the last CI build.", "gauge", int64(snap.CI.Coverage)},
 		)
 	}
 
