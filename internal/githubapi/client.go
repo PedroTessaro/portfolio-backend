@@ -23,9 +23,11 @@ import (
 	"time"
 )
 
-// Versioned: adding a field to Stats would otherwise keep decoding against the
-// old shape until the TTL expired, quietly dropping whatever is new.
-const cacheKey = "github:stats:v2"
+// The cache key carries the build. A deploy is exactly when the meaning of
+// what's cached can change — a new field, a different source for an old one —
+// and inheriting the previous build's answer hides that for a full TTL. Costs
+// one API call per deploy, which is nothing.
+func (c *Client) cacheKey() string { return "github:stats:" + c.version }
 
 type Stats struct {
 	Repos      int       `json:"repos"`
@@ -71,6 +73,7 @@ type Cache interface {
 type Client struct {
 	user     string
 	token    string
+	version  string
 	featured []string
 	ttl      time.Duration
 	cache    Cache
@@ -82,10 +85,11 @@ type Client struct {
 	memo Stats
 }
 
-func New(user, token string, featured []string, ttl time.Duration, cache Cache, log *slog.Logger) *Client {
+func New(user, token, version string, featured []string, ttl time.Duration, cache Cache, log *slog.Logger) *Client {
 	return &Client{
 		user:     user,
 		token:    token,
+		version:  version,
 		featured: featured,
 		ttl:      ttl,
 		cache:    cache,
@@ -102,7 +106,7 @@ func (c *Client) Stats(ctx context.Context) Stats {
 
 	if c.cache != nil {
 		var cached Stats
-		if found, err := c.cache.GetCached(ctx, cacheKey, &cached); err != nil {
+		if found, err := c.cache.GetCached(ctx, c.cacheKey(), &cached); err != nil {
 			c.log.Warn("reading stats cache", "err", err)
 		} else if found && time.Since(cached.FetchedAt) < c.ttl {
 			c.remember(cached)
@@ -118,7 +122,7 @@ func (c *Client) Stats(ctx context.Context) Stats {
 
 	c.remember(fresh)
 	if c.cache != nil {
-		if err := c.cache.SetCached(ctx, cacheKey, fresh, c.ttl); err != nil {
+		if err := c.cache.SetCached(ctx, c.cacheKey(), fresh, c.ttl); err != nil {
 			c.log.Warn("writing stats cache", "err", err)
 		}
 	}

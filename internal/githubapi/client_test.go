@@ -35,7 +35,7 @@ func featuringClient(t *testing.T, featured []string, cache Cache, repos http.Ha
 	}))
 	t.Cleanup(srv.Close)
 
-	c := New("PedroTessaro", "", featured, 15*time.Minute, cache, discardLogger())
+	c := New("PedroTessaro", "", "test", featured, 15*time.Minute, cache, discardLogger())
 	c.baseURL = srv.URL
 	return c
 }
@@ -172,7 +172,7 @@ func TestColdStartReadsSharedCache(t *testing.T) {
 func TestExpiredCacheIsRefetched(t *testing.T) {
 	cache := newMemCache()
 	stale := Stats{Repos: 1, Stars: 1, FetchedAt: time.Now().Add(-2 * time.Hour)}
-	if err := cache.SetCached(context.Background(), cacheKey, stale, time.Minute); err != nil {
+	if err := cache.SetCached(context.Background(), "github:stats:test", stale, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,7 +350,7 @@ func TestLastCommitComesFromTheNewestRepo(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := New("PedroTessaro", "", nil, 15*time.Minute, nil, discardLogger())
+	c := New("PedroTessaro", "", "test", nil, 15*time.Minute, nil, discardLogger())
 	c.baseURL = srv.URL
 
 	stats, err := c.fetch(context.Background())
