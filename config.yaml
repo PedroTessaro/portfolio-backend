@@ -1,0 +1,18 @@
+# Terminal content. Edited without rebuilding — the server reads this at boot.
+identity:
+  name: "Pedro Tessaro"
+  role: "Backend Engineer"
+  location: "Brazil"
+  github_user: "PedroTessaro"
+
+stack:
+  - "Go"
+  - "Java"
+  - "C/C++"
+  - "PostgreSQL"
+  - "Docker"
+
+terminal:
+  host: "pedrotessaro.fly.dev"
+  user: "tessaro"
+  machine: "portfolio"

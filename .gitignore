@@ -1,0 +1,14 @@
+bin/
+data/
+*.db
+*.db-shm
+*.db-wal
+cover.out
+cover.html
+preview.svg
+.env
+
+# swaps de editor
+*.swp
+*.swo
+.DS_Store
