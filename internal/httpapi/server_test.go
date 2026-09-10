@@ -86,6 +86,61 @@ func newServerWith(t *testing.T, kv *store.Store) http.Handler {
 	}).Routes()
 }
 
+// newPublishingServer backs the store with a stub Redis that remembers the one
+// key the CI writes.
+func newPublishingServer(t *testing.T, token string) http.Handler {
+	t.Helper()
+
+	var stored string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var commands [][]string
+		json.NewDecoder(r.Body).Decode(&commands)
+
+		replies := make([]map[string]any, 0, len(commands))
+		for _, cmd := range commands {
+			switch {
+			case cmd[0] == "SET" && cmd[1] == "ci:status":
+				stored = cmd[2]
+				replies = append(replies, map[string]any{"result": "OK"})
+			case cmd[0] == "GET" && cmd[1] == "ci:status":
+				replies = append(replies, map[string]any{"result": stored})
+			case cmd[0] == "LRANGE":
+				replies = append(replies, map[string]any{"result": []any{}})
+			default:
+				replies = append(replies, map[string]any{"result": 1.0})
+			}
+		}
+		json.NewEncoder(w).Encode(replies)
+	}))
+	t.Cleanup(stub.Close)
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New(Options{
+		Config: &config.Config{
+			Identity: config.Identity{Name: "Pedro Tessaro", Role: "Backend Engineer", GitHubUser: "PedroTessaro"},
+			Stack:    []string{"Go"},
+			Terminal: config.Terminal{Host: "example.dev", User: "tessaro", Machine: "portfolio"},
+		},
+		GitHub:       stubStats{},
+		Store:        store.New(stub.URL, "stub-token"),
+		Logger:       log,
+		Region:       "gru",
+		Version:      "test",
+		PublishToken: token,
+	}).Routes()
+}
+
+func post(t *testing.T, h http.Handler, path, auth, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -246,5 +301,65 @@ func TestWhoamiCarriesProjects(t *testing.T) {
 	}
 	if payload.Projects[0].Name != "portfolio-backend" || payload.Projects[0].Language != "Go" {
 		t.Errorf("project = %+v", payload.Projects[0])
+	}
+}
+
+// The publish endpoint is the only way anything writes into this service, so
+// its refusals matter more than its successes.
+func TestPublishCIRejectsBadTokens(t *testing.T) {
+	h := newPublishingServer(t, "right-token")
+
+	for name, header := range map[string]string{
+		"no header":     "",
+		"wrong token":   "Bearer wrong-token",
+		"missing":       "Bearer ",
+		"not a bearer":  "right-token",
+		"case mismatch": "Bearer RIGHT-TOKEN",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := post(t, h, "/internal/ci", header, `{"status":"passing","tests":10}`)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// With no token configured the endpoint must not be open, it must be closed.
+func TestPublishCIDisabledWithoutToken(t *testing.T) {
+	rec := post(t, newPublishingServer(t, ""), "/internal/ci", "Bearer anything", `{"status":"passing"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestPublishCIRejectsBadBodies(t *testing.T) {
+	h := newPublishingServer(t, "right-token")
+
+	for name, body := range map[string]string{
+		"not json":      `{`,
+		"empty status":  `{"tests":10}`,
+		"wrong shape":   `["passing"]`,
+		"empty payload": ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := post(t, h, "/internal/ci", "Bearer right-token", body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	}
+}
+
+func TestPublishCIStoresAndSurfaces(t *testing.T) {
+	h := newPublishingServer(t, "right-token")
+
+	rec := post(t, h, "/internal/ci", "Bearer right-token", `{"status":"passing","sha":"abc1234","tests":55,"coverage":83.4}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+
+	if body := get(t, h, "/terminal.svg").Body.String(); !strings.Contains(body, "passing") || !strings.Contains(body, "55") {
+		t.Error("published CI status should show up in the SVG")
 	}
 }

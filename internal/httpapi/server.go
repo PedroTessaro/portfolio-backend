@@ -3,10 +3,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -23,12 +25,13 @@ type StatsSource interface {
 }
 
 type Server struct {
-	cfg     *config.Config
-	github  StatsSource
-	store   *store.Store
-	log     *slog.Logger
-	region  string
-	version string
+	cfg          *config.Config
+	github       StatsSource
+	store        *store.Store
+	log          *slog.Logger
+	region       string
+	version      string
+	publishToken string
 
 	requests atomic.Int64
 
@@ -44,16 +47,20 @@ type Options struct {
 	Logger  *slog.Logger
 	Region  string
 	Version string
+
+	// Shared with the CI workflow. Empty disables the publish endpoint.
+	PublishToken string
 }
 
 func New(opts Options) *Server {
 	return &Server{
-		cfg:     opts.Config,
-		github:  opts.GitHub,
-		store:   opts.Store,
-		log:     opts.Logger,
-		region:  opts.Region,
-		version: opts.Version,
+		cfg:          opts.Config,
+		github:       opts.GitHub,
+		store:        opts.Store,
+		log:          opts.Logger,
+		region:       opts.Region,
+		version:      opts.Version,
+		publishToken: opts.PublishToken,
 	}
 }
 
@@ -63,6 +70,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /whoami", s.handleWhoami)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("POST /internal/ci", s.handlePublishCI)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/terminal.svg", http.StatusFound)
 	})
@@ -183,6 +191,46 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if err := enc.Encode(payload); err != nil {
 		s.log.Error("writing whoami", "err", err)
 	}
+}
+
+// handlePublishCI takes the numbers from the CI workflow. The workflow holds a
+// token for this endpoint rather than credentials for the database, so the
+// store stays private to the service.
+func (s *Server) handlePublishCI(w http.ResponseWriter, r *http.Request) {
+	if s.publishToken == "" {
+		http.Error(w, "publishing disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// The scheme is part of the check: CutPrefix hands back the original string
+	// when the prefix is absent, so ignoring ok would accept a bare token.
+	presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(s.publishToken)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var status store.CIStatus
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&status); err != nil {
+		http.Error(w, "malformed body", http.StatusBadRequest)
+		return
+	}
+	if status.Status == "" {
+		http.Error(w, "status is required", http.StatusBadRequest)
+		return
+	}
+	if status.FinishedAt.IsZero() {
+		status.FinishedAt = time.Now()
+	}
+
+	if err := s.store.PutCI(r.Context(), status); err != nil {
+		s.log.Error("publishing ci status", "err", err)
+		http.Error(w, "could not store", http.StatusBadGateway)
+		return
+	}
+
+	s.log.Info("ci status published", "status", status.Status, "tests", status.Tests, "coverage", status.Coverage)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

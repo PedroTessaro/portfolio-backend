@@ -43,12 +43,13 @@ func Build(version string) (http.Handler, error) {
 	gh := githubapi.New(cfg.Identity.GitHubUser, os.Getenv("GITHUB_TOKEN"), cfg.Projects, statsTTL, cache, log)
 
 	return httpapi.New(httpapi.Options{
-		Config:  cfg,
-		GitHub:  gh,
-		Store:   kv,
-		Logger:  log,
-		Region:  region(),
-		Version: version,
+		Config:       cfg,
+		GitHub:       gh,
+		Store:        kv,
+		Logger:       log,
+		Region:       region(),
+		Version:      version,
+		PublishToken: os.Getenv("CI_PUBLISH_TOKEN"),
 	}).Routes(), nil
 }
 

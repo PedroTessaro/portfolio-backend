@@ -143,6 +143,21 @@ func (s *Store) Read(ctx context.Context, now time.Time) (Snapshot, error) {
 	return snap, nil
 }
 
+// PutCI stores what the CI reported. No expiry: the last known result stays
+// the last known result until a build replaces it.
+func (s *Store) PutCI(ctx context.Context, status CIStatus) error {
+	if !s.Enabled() {
+		return fmt.Errorf("no store configured")
+	}
+
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	_, err = s.pipeline(ctx, [][]string{{"SET", keyCI, string(encoded)}})
+	return err
+}
+
 // GetCached reads a JSON value written by SetCached. A miss is (false, nil):
 // an expired cache is an ordinary outcome, not a failure.
 func (s *Store) GetCached(ctx context.Context, key string, dst any) (bool, error) {

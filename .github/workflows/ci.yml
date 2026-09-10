@@ -33,25 +33,27 @@ jobs:
 
       # The terminal claims a test count and a coverage figure. This is where
       # those numbers come from — nobody types them anywhere.
+      #
+      # This posts to the service rather than writing to its Redis directly, so
+      # the workflow holds a token for one endpoint instead of credentials for
+      # the whole database.
       - name: publish results
         if: github.ref == 'refs/heads/main'
         env:
-          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
-          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          PUBLISH_TOKEN: ${{ secrets.CI_PUBLISH_TOKEN }}
         run: |
           tests=$(go test ./... -list '.*' 2>/dev/null | grep -c '^Test' || true)
           coverage=$(go tool cover -func=cover.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
 
           payload=$(jq -nc \
+            --arg status "passing" \
             --arg sha "${GITHUB_SHA:0:7}" \
             --argjson tests "${tests:-0}" \
             --argjson coverage "${coverage:-0}" \
-            --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{status:"passing", sha:$sha, tests:$tests, coverage:$coverage, finished_at:$finished_at}')
+            '{status:$status, sha:$sha, tests:$tests, coverage:$coverage}')
 
-          curl -fsS -X POST "$KV_REST_API_URL/pipeline" \
-            -H "Authorization: Bearer $KV_REST_API_TOKEN" \
+          echo "publishing: $payload"
+          curl -fsS --globoff -X POST "https://pedrotessaro.vercel.app/internal/ci" \
+            -H "Authorization: Bearer ${PUBLISH_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "$(jq -nc --arg p "$payload" '[["SET","ci:status",$p]]')" > /dev/null
-
-          echo "published: $payload"
+            -d "$payload"
