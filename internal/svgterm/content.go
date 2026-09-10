@@ -9,6 +9,10 @@ import (
 	"github.com/PedroTessaro/portfolio-backend/internal/githubapi"
 )
 
+// Fewer samples than this and the percentile says more about which request was
+// a cold start than about the service.
+const minLatencySamples = 30
+
 // buildLines is the session the terminal plays. Three commands, each followed
 // by its own output, and every block degrades on its own if its data source is
 // missing. Nothing here is written by hand except the identity, which comes
@@ -178,7 +182,9 @@ func statsLines(d Data, p Palette) []line {
 	}
 
 	// Percentiles over the rolling window of real requests, not a benchmark.
-	if d.Latency.Samples > 0 {
+	// Below a useful population a single cold start owns the p95, so the line
+	// stays off rather than reporting noise as though it were a measurement.
+	if d.Latency.Samples >= minLatencySamples {
 		lines = append(lines, pairsLine([]pair{
 			{"p50", shortLatency(d.Latency.P50), p.Purple},
 			{"p95", shortLatency(d.Latency.P95), p.Purple},

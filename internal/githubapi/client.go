@@ -23,7 +23,9 @@ import (
 	"time"
 )
 
-const cacheKey = "github:stats"
+// Versioned: adding a field to Stats would otherwise keep decoding against the
+// old shape until the TTL expired, quietly dropping whatever is new.
+const cacheKey = "github:stats:v2"
 
 type Stats struct {
 	Repos      int       `json:"repos"`

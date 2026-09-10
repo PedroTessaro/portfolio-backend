@@ -151,12 +151,13 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := map[string]any{
-		"name":     s.cfg.Identity.Name,
-		"role":     s.cfg.Identity.Role,
-		"location": s.cfg.Identity.Location,
-		"stack":    s.cfg.Stack,
-		"tagline":  s.cfg.Identity.Tagline,
-		"projects": stats.Projects,
+		"name":         s.cfg.Identity.Name,
+		"role":         s.cfg.Identity.Role,
+		"location":     s.cfg.Identity.Location,
+		"stack":        s.cfg.Stack,
+		"tagline":      s.cfg.Identity.Tagline,
+		"availability": s.cfg.Identity.Availability,
+		"projects":     stats.Projects,
 		"github": map[string]any{
 			"user":              s.cfg.Identity.GitHubUser,
 			"repos":             stats.Repos,
@@ -165,6 +166,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			"cache_age":         stats.Age().Round(time.Second).String(),
 			"stale":             stats.Stale,
 		},
+		"last_commit": stats.Last,
 		"server": map[string]any{
 			"region":    s.region,
 			"version":   s.version,
