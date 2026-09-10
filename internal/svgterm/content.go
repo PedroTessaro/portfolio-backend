@@ -5,13 +5,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PedroTessaro/portfolio-backend/internal/githubapi"
 )
 
-// buildLines is the script the terminal plays: two commands, each followed by
-// its output. Every block degrades on its own if its data source is missing.
+// buildLines is the session the terminal plays. Three commands, each followed
+// by its own output, and every block degrades on its own if its data source is
+// missing. Nothing here is written by hand except the identity, which comes
+// from the config; the rest is whatever the API said a moment ago.
 func buildLines(d Data, p Palette) []line {
-	id := d.Cfg.Identity
-
 	lines := []line{
 		{typed: true, segs: []segment{
 			{"$ ", p.Green},
@@ -19,7 +21,33 @@ func buildLines(d Data, p Palette) []line {
 			{" -s ", p.Foreground},
 			{"https://" + d.Cfg.Terminal.Host + "/whoami", p.Cyan},
 		}},
-		{},
+	}
+	lines = append(lines, whoamiLines(d, p)...)
+
+	if len(d.Stats.Projects) > 0 {
+		lines = append(lines, line{}, line{typed: true, segs: []segment{
+			{"$ ", p.Green},
+			{"ls", p.Blue},
+			{" -lt ", p.Foreground},
+			{"~/projects", p.Cyan},
+		}})
+		lines = append(lines, projectLines(d.Stats.Projects, p)...)
+	}
+
+	lines = append(lines, line{}, line{typed: true, segs: []segment{
+		{"$ ", p.Green},
+		{"./stats", p.Blue},
+		{" --live", p.Orange},
+	}})
+	lines = append(lines, statsLines(d, p)...)
+
+	return append(lines, line{}, line{segs: []segment{{"$ ", p.Green}}})
+}
+
+func whoamiLines(d Data, p Palette) []line {
+	id := d.Cfg.Identity
+
+	lines := []line{
 		{segs: []segment{
 			{"> ", p.Dim},
 			{id.Name, p.Foreground},
@@ -27,17 +55,11 @@ func buildLines(d Data, p Palette) []line {
 			{id.Role, p.Purple},
 		}},
 		{segs: stackLine(d.Cfg.Stack, p)},
-		{},
-		{typed: true, segs: []segment{
-			{"$ ", p.Green},
-			{"./stats", p.Blue},
-			{" --live", p.Orange},
-		}},
-		{},
 	}
 
-	lines = append(lines, statsLines(d, p)...)
-	lines = append(lines, line{}, line{segs: []segment{{"$ ", p.Green}}})
+	if extra := joinNonEmpty(" · ", id.Location, id.Tagline); extra != "" {
+		lines = append(lines, line{segs: []segment{{"> ", p.Dim}, {extra, p.Dim}}})
+	}
 	return lines
 }
 
@@ -50,6 +72,35 @@ func stackLine(stack []string, p Palette) []segment {
 		segs = append(segs, segment{tech, p.Cyan})
 	}
 	return segs
+}
+
+// projectLines lays the listing out in columns, padded to the widest entry so
+// it reads like real ls output rather than a ragged list.
+func projectLines(projects []githubapi.Project, p Palette) []line {
+	nameWidth, langWidth := 0, 0
+	for _, project := range projects {
+		nameWidth = max(nameWidth, runeLen(project.Name))
+		langWidth = max(langWidth, runeLen(project.Language))
+	}
+
+	lines := make([]line, 0, len(projects))
+	for _, project := range projects {
+		// A column of "★0" only advertises the stars that aren't there. The
+		// space stays reserved so the columns still line up.
+		stars := ""
+		if project.Stars > 0 {
+			stars = "★" + strconv.Itoa(project.Stars)
+		}
+
+		lines = append(lines, line{segs: []segment{
+			{"> ", p.Dim},
+			{padRight(project.Name, nameWidth) + "   ", p.Cyan},
+			{padRight(project.Language, langWidth) + "   ", p.Dim},
+			{padRight(stars, 4) + "  ", p.Yellow},
+			{sinceRoughly(project.PushedAt), p.Dim},
+		}})
+	}
+	return lines
 }
 
 func statsLines(d Data, p Palette) []line {
@@ -79,13 +130,11 @@ func statsLines(d Data, p Palette) []line {
 	if !d.Cold {
 		instance = "warm"
 	}
-	runtime := pairsLine([]pair{
+	lines := []line{githubLine, pairsLine([]pair{
 		{"region", d.Region, p.Green},
 		{"instance", instance, p.Green},
 		{"served in", shortLatency(d.ServedIn), p.Green},
-	}, p)
-
-	lines := []line{githubLine, runtime}
+	}, p)}
 
 	// Without a configured store there is no counter to show.
 	if d.HasViews {
@@ -114,6 +163,25 @@ func pairsLine(pairs []pair, p Palette) line {
 	return line{segs: segs}
 }
 
+func runeLen(s string) int { return len([]rune(s)) }
+
+func padRight(s string, width int) string {
+	if pad := width - runeLen(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	return s
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, sep)
+}
+
 func humanInt(n int) string {
 	s := strconv.Itoa(n)
 	neg := strings.HasPrefix(s, "-")
@@ -132,7 +200,29 @@ func humanInt(n int) string {
 	return out.String()
 }
 
-// shortDur keeps the two largest useful units: "3d 4h", "12m 30s".
+// sinceRoughly is the ls-style age of a push: one unit, no false precision.
+func sinceRoughly(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+
+	days := int(time.Since(t).Hours() / 24)
+	switch {
+	case days >= 365:
+		return fmt.Sprintf("%dy ago", days/365)
+	case days >= 30:
+		return fmt.Sprintf("%dmo ago", days/30)
+	case days >= 1:
+		return fmt.Sprintf("%dd ago", days)
+	}
+
+	if hours := int(time.Since(t).Hours()); hours >= 1 {
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	return "just now"
+}
+
+// shortDur keeps the two largest useful units: "3d 4h", "12m".
 func shortDur(d time.Duration) string {
 	switch {
 	case d >= 24*time.Hour:

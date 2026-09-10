@@ -1,8 +1,9 @@
 # portfolio-backend
 
 The terminal at the top of my GitHub profile is this service. Every time someone
-opens my profile it renders a fresh SVG, with the repo counts pulled from the
-GitHub API and the response time measured on that request.
+opens my profile it renders a fresh SVG: the project listing, the counts and the
+response time are all read at request time. My profile README is the image and a
+row of links, nothing else.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
@@ -68,6 +69,27 @@ misses both pays for the API call.
 
 And there's no uptime to report, so that line says whether the instance was cold
 or warm. Less impressive, but true.
+
+## Nothing is written twice
+
+The featured projects are named in `internal/config/profile.yaml` — just the
+names:
+
+```yaml
+projects:
+  - "portfolio-backend"
+  - "RSSAggregator"
+  - "AssemblerImplementation"
+```
+
+Language, star count and last push come from the API, and the listing is ordered
+by push date so `ls -lt` isn't a lie. A name that no longer resolves gets skipped
+with a warning rather than breaking the render, which is what happens when you
+rename a repo and forget this file exists.
+
+The reason for curating at all: sorting purely by recency puts whatever I last
+poked at on top, and that is usually a scratch repo rather than something worth
+showing.
 
 ## Endpoints
 

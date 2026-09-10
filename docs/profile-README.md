@@ -2,46 +2,32 @@
   Profile README — copy everything below into PedroTessaro/PedroTessaro/README.md
   (the repo named after your user, which GitHub shows at the top of the profile).
 
-  Check first:
-    1. the deployment is up and the URL matches internal/config/profile.yaml
-    2. open the SVG URL in a browser once, to confirm the animation runs
+  There is deliberately almost nothing here. The name, the stack, the project
+  listing and every number are rendered by the service on each request, from
+  internal/config/profile.yaml and the GitHub API. Editing this file is not how
+  you change what the profile says — edit profile.yaml and redeploy.
+
+  The links below are the exception: an image on GitHub can't have clickable
+  regions, so they have to live in markdown.
 -->
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://pedrotessaro.vercel.app/terminal.svg?theme=light">
-  <img alt="Terminal showing: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker." src="https://pedrotessaro.vercel.app/terminal.svg">
+  <img alt="Terminal session: Pedro Tessaro, Backend Engineer. Go, Java, C/C++, PostgreSQL, Docker, followed by a live listing of my projects and the service's own metrics." src="https://pedrotessaro.vercel.app/terminal.svg">
 </picture>
 
-That terminal isn't a GIF. It's a Go service that renders the SVG on every
-request, and the command it types actually answers:
+<sub>
+Everything above is rendered per request by
+<a href="https://github.com/PedroTessaro/portfolio-backend">portfolio-backend</a> —
+the project listing, the counts and the response time are read live, not written here.
+Try it: <code>curl -s https://pedrotessaro.vercel.app/whoami</code>
+</sub>
 
-```console
-$ curl -s https://pedrotessaro.vercel.app/whoami
-```
+---
 
-Code and the writeup on why animating a README is harder than it looks:
-[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend).
-
-### What I work on
-
-Backend, mostly Go these days, and the layers underneath it. A lot of what I've
-built is about making those layers visible: assemblers, interpreters, a text
-editor from raw-mode input up.
-
-- [portfolio-backend](https://github.com/PedroTessaro/portfolio-backend) — the service above. Go, SMIL, Redis, Vercel
-- [RSSAggregator](https://github.com/PedroTessaro/RSSAggregator) — feed aggregator in Go, concurrent fetching and a REST API
-- [AssemblerImplementation](https://github.com/PedroTessaro/AssemblerImplementation) — two-pass assembler in Java, symbol table and relocation
-- [ReversePolishNotationInterpreter](https://github.com/PedroTessaro/ReversePolishNotationInterpreter) — stack-based expression interpreter
-- [parallel_programming_studies](https://github.com/PedroTessaro/parallel_programming_studies) — threads and synchronization in C
-- [TextEditor](https://github.com/PedroTessaro/TextEditor) — terminal editor in C++
-
-Currently going deeper into Go and distributed systems.
-
-### Elsewhere
-
-CS student and piano teacher. Before backend took over I wrote a fair number of
-Swift apps at the Apple Developer Academy | Mackenzie — still in
-[my repositories](https://github.com/PedroTessaro?tab=repositories), just not
-what I'm building now.
-
-[LinkedIn](https://www.linkedin.com/in/pedrotessaro/) · ptssar22@gmail.com
+[All repositories](https://github.com/PedroTessaro?tab=repositories) ·
+[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend) ·
+[RSSAggregator](https://github.com/PedroTessaro/RSSAggregator) ·
+[AssemblerImplementation](https://github.com/PedroTessaro/AssemblerImplementation) ·
+[LinkedIn](https://www.linkedin.com/in/pedrotessaro/) ·
+[ptssar22@gmail.com](mailto:ptssar22@gmail.com)

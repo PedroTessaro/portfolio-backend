@@ -20,11 +20,18 @@ func testData() Data {
 				Role:       "Backend Engineer",
 				Location:   "Brazil",
 				GitHubUser: "PedroTessaro",
+				Tagline:    "CS student",
 			},
 			Stack:    []string{"Go", "Java", "C/C++"},
 			Terminal: config.Terminal{Host: "example.fly.dev", User: "tessaro", Machine: "portfolio"},
 		},
-		Stats:    githubapi.Stats{Repos: 27, Stars: 9, Commits: 412, HasCommits: true, FetchedAt: time.Now()},
+		Stats: githubapi.Stats{
+			Repos: 27, Stars: 9, Commits: 412, HasCommits: true, FetchedAt: time.Now(),
+			Projects: []githubapi.Project{
+				{Name: "portfolio-backend", Language: "Go", Stars: 3, PushedAt: time.Now().Add(-2 * time.Hour)},
+				{Name: "RSSAggregator", Language: "Go", PushedAt: time.Now().Add(-200 * 24 * time.Hour)},
+			},
+		},
 		Views:    store.Views{Total: 1234, Today: 37},
 		HasViews: true,
 		Region:   "gru",
@@ -68,6 +75,10 @@ func TestRenderIncludesLiveData(t *testing.T) {
 		"example.fly.dev/whoami",
 		"27",
 		"412",
+		"portfolio-backend",
+		"RSSAggregator",
+		"2h ago",
+		"CS student",
 		"1,234",
 		"gru",
 		"8ms",
@@ -154,6 +165,54 @@ func TestShortDur(t *testing.T) {
 	} {
 		if got := shortDur(tc.in); got != tc.want {
 			t.Errorf("shortDur(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The listing is the part most likely to drift, so it gets its own checks.
+func TestProjectListing(t *testing.T) {
+	out := string(Render(testData(), ThemeByName("dark")))
+
+	if !strings.Contains(out, "ls") || !strings.Contains(out, "~/projects") {
+		t.Error("expected the ls block")
+	}
+	// Padded to the longest name so the columns line up.
+	if !strings.Contains(out, "portfolio-backend") || !strings.Contains(out, "RSSAggregator    ") {
+		t.Error("names should be padded to a common width")
+	}
+	if !strings.Contains(out, "★3") {
+		t.Error("a starred project should show its count")
+	}
+	if strings.Contains(out, "★0") {
+		t.Error("zero stars should render as blank, not ★0")
+	}
+}
+
+// Nothing to list is not an error; the block just disappears.
+func TestProjectBlockOmittedWhenEmpty(t *testing.T) {
+	d := testData()
+	d.Stats.Projects = nil
+
+	if out := string(Render(d, ThemeByName("dark"))); strings.Contains(out, "~/projects") {
+		t.Error("the ls block should be dropped when there is nothing to list")
+	}
+}
+
+func TestSinceRoughly(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		in   time.Time
+		want string
+	}{
+		{now.Add(-30 * time.Minute), "just now"},
+		{now.Add(-5 * time.Hour), "5h ago"},
+		{now.Add(-3 * 24 * time.Hour), "3d ago"},
+		{now.Add(-60 * 24 * time.Hour), "2mo ago"},
+		{now.Add(-800 * 24 * time.Hour), "2y ago"},
+		{time.Time{}, "-"},
+	} {
+		if got := sinceRoughly(tc.in); got != tc.want {
+			t.Errorf("sinceRoughly(%v) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

@@ -40,7 +40,7 @@ func Build(version string) (http.Handler, error) {
 		log.Warn("no KV credentials, README view counter disabled")
 	}
 
-	gh := githubapi.New(cfg.Identity.GitHubUser, os.Getenv("GITHUB_TOKEN"), statsTTL, cache, log)
+	gh := githubapi.New(cfg.Identity.GitHubUser, os.Getenv("GITHUB_TOKEN"), cfg.Projects, statsTTL, cache, log)
 
 	return httpapi.New(httpapi.Options{
 		Config:  cfg,

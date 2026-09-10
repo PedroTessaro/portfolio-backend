@@ -22,6 +22,7 @@ type Identity struct {
 	Role       string `yaml:"role"`
 	Location   string `yaml:"location"`
 	GitHubUser string `yaml:"github_user"`
+	Tagline    string `yaml:"tagline"` // optional third line under the name
 }
 
 type Terminal struct {
@@ -33,6 +34,7 @@ type Terminal struct {
 type Config struct {
 	Identity Identity `yaml:"identity"`
 	Stack    []string `yaml:"stack"`
+	Projects []string `yaml:"projects"` // repo names to feature, resolved against the API
 	Terminal Terminal `yaml:"terminal"`
 }
 

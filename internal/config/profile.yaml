@@ -1,9 +1,11 @@
-# Terminal content. Edited without rebuilding — the server reads this at boot.
+# Everything the terminal says about me. Numbers are never in here — those come
+# from the GitHub API at request time.
 identity:
   name: "Pedro Tessaro"
   role: "Backend Engineer"
   location: "Brazil"
   github_user: "PedroTessaro"
+  tagline: "CS student · piano teacher"
 
 stack:
   - "Go"
@@ -11,6 +13,16 @@ stack:
   - "C/C++"
   - "PostgreSQL"
   - "Docker"
+
+# The shop window. Only the names live here; language, stars and last push are
+# read live, so the listing can't go stale. Order is by last push, not by this
+# list. A name that no longer exists is skipped with a warning in the logs.
+projects:
+  - "portfolio-backend"
+  - "RSSAggregator"
+  - "AssemblerImplementation"
+  - "ReversePolishNotationInterpreter"
+  - "parallel_programming_studies"
 
 terminal:
   host: "pedrotessaro.vercel.app"

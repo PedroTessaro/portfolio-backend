@@ -18,10 +18,15 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 
 func testClient(t *testing.T, cache Cache, handler http.HandlerFunc) *Client {
 	t.Helper()
+	return featuringClient(t, nil, cache, handler)
+}
+
+func featuringClient(t *testing.T, featured []string, cache Cache, handler http.HandlerFunc) *Client {
+	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	c := New("PedroTessaro", "", 15*time.Minute, cache, discardLogger())
+	c := New("PedroTessaro", "", featured, 15*time.Minute, cache, discardLogger())
 	c.baseURL = srv.URL
 	return c
 }
@@ -252,4 +257,68 @@ func (failingCache) GetCached(context.Context, string, any) (bool, error) {
 
 func (failingCache) SetCached(context.Context, string, any, time.Duration) error {
 	return fmt.Errorf("cache unreachable")
+}
+
+// The config names the repos; the API supplies everything else, and the order
+// comes from the push dates rather than the config.
+func TestFeaturedProjectsResolveFromTheAPI(t *testing.T) {
+	c := featuringClient(t, []string{"RSSAggregator", "portfolio-backend", "gone"}, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `[
+                {"name":"RSSAggregator","fork":false,"stargazers_count":2,"language":"Go","pushed_at":"2026-03-01T00:00:00Z"},
+                {"name":"portfolio-backend","fork":false,"stargazers_count":1,"language":"Go","pushed_at":"2026-09-01T00:00:00Z"},
+                {"name":"NotFeatured","fork":false,"stargazers_count":50,"language":"Swift","pushed_at":"2026-08-01T00:00:00Z"}
+            ]`)
+		})
+
+	stats, err := c.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	if len(stats.Projects) != 2 {
+		t.Fatalf("got %d projects, want 2 (the missing name should be skipped)", len(stats.Projects))
+	}
+	if stats.Projects[0].Name != "portfolio-backend" {
+		t.Errorf("first project = %q, want the most recently pushed", stats.Projects[0].Name)
+	}
+	if stats.Projects[0].Stars != 1 || stats.Projects[0].Language != "Go" {
+		t.Errorf("details not taken from the API: %+v", stats.Projects[0])
+	}
+	// Totals still count every repo, featured or not.
+	if stats.Repos != 3 || stats.Stars != 53 {
+		t.Errorf("repos=%d stars=%d, want 3 and 53", stats.Repos, stats.Stars)
+	}
+}
+
+func TestFeaturedMatchIsCaseInsensitive(t *testing.T) {
+	c := featuringClient(t, []string{"rssaggregator"}, nil, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"name":"RSSAggregator","fork":false,"language":"Go","pushed_at":"2026-03-01T00:00:00Z"}]`)
+	})
+
+	stats, err := c.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(stats.Projects) != 1 {
+		t.Fatalf("got %d projects, want 1", len(stats.Projects))
+	}
+	if stats.Projects[0].Name != "RSSAggregator" {
+		t.Errorf("name = %q, want the API spelling", stats.Projects[0].Name)
+	}
+}
+
+// A repo with no detected language would otherwise render an empty column.
+func TestMissingLanguageGetsAPlaceholder(t *testing.T) {
+	c := featuringClient(t, []string{"docs"}, nil, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"name":"docs","fork":false,"language":null,"pushed_at":"2026-03-01T00:00:00Z"}]`)
+	})
+
+	stats, err := c.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if stats.Projects[0].Language != "-" {
+		t.Errorf("language = %q, want a placeholder", stats.Projects[0].Language)
+	}
 }

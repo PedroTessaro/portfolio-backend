@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,10 +30,20 @@ type Stats struct {
 	Stars      int       `json:"stars"`
 	Commits    int       `json:"commits_this_year"`
 	HasCommits bool      `json:"has_commits"` // contributions need a token
+	Projects   []Project `json:"projects"`
 	FetchedAt  time.Time `json:"fetched_at"`
 
 	Stale      bool   `json:"-"`
 	LastAPIErr string `json:"-"`
+}
+
+// Project is one featured repository, named in the config but described by the
+// API so the listing can't drift out of date.
+type Project struct {
+	Name     string    `json:"name"`
+	Language string    `json:"language"`
+	Stars    int       `json:"stars"`
+	PushedAt time.Time `json:"pushed_at"`
 }
 
 func (s Stats) Age() time.Duration { return time.Since(s.FetchedAt) }
@@ -44,27 +56,29 @@ type Cache interface {
 }
 
 type Client struct {
-	user    string
-	token   string
-	ttl     time.Duration
-	cache   Cache
-	log     *slog.Logger
-	http    *http.Client
-	baseURL string // pointed at a local server in tests
+	user     string
+	token    string
+	featured []string
+	ttl      time.Duration
+	cache    Cache
+	log      *slog.Logger
+	http     *http.Client
+	baseURL  string // pointed at a local server in tests
 
 	mu   sync.RWMutex
 	memo Stats
 }
 
-func New(user, token string, ttl time.Duration, cache Cache, log *slog.Logger) *Client {
+func New(user, token string, featured []string, ttl time.Duration, cache Cache, log *slog.Logger) *Client {
 	return &Client{
-		user:    user,
-		token:   token,
-		ttl:     ttl,
-		cache:   cache,
-		log:     log,
-		http:    &http.Client{Timeout: 8 * time.Second},
-		baseURL: "https://api.github.com",
+		user:     user,
+		token:    token,
+		featured: featured,
+		ttl:      ttl,
+		cache:    cache,
+		log:      log,
+		http:     &http.Client{Timeout: 8 * time.Second},
+		baseURL:  "https://api.github.com",
 	}
 }
 
@@ -127,15 +141,18 @@ func (c *Client) lastResort(cause error) Stats {
 }
 
 func (c *Client) fetch(ctx context.Context) (Stats, error) {
-	repos, stars, err := c.fetchRepos(ctx)
+	repos, err := c.fetchRepos(ctx)
 	if err != nil {
 		return Stats{}, err
 	}
 
 	stats := Stats{
-		Repos:     repos,
-		Stars:     stars,
+		Repos:     len(repos),
+		Projects:  c.featuredFrom(repos),
 		FetchedAt: time.Now(),
+	}
+	for _, r := range repos {
+		stats.Stars += r.Stars
 	}
 
 	// Contributions only exist on the GraphQL API, which requires auth. Without
@@ -151,32 +168,71 @@ func (c *Client) fetch(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
+// repo is the slice of the API payload we care about. One pass over it feeds
+// both the totals and the featured listing.
+type repo struct {
+	Name     string    `json:"name"`
+	Fork     bool      `json:"fork"`
+	Stars    int       `json:"stargazers_count"`
+	Language string    `json:"language"`
+	PushedAt time.Time `json:"pushed_at"`
+}
+
 // fetchRepos pages through the public repos, skipping forks since those aren't
 // my work.
-func (c *Client) fetchRepos(ctx context.Context) (repos, stars int, err error) {
-	type repo struct {
-		Fork  bool `json:"fork"`
-		Stars int  `json:"stargazers_count"`
-	}
+func (c *Client) fetchRepos(ctx context.Context) ([]repo, error) {
+	var all []repo
 
 	for page := 1; page <= 10; page++ {
 		url := fmt.Sprintf("%s/users/%s/repos?per_page=100&page=%d&type=owner", c.baseURL, c.user, page)
 		var batch []repo
 		if err := c.getJSON(ctx, url, &batch); err != nil {
-			return 0, 0, err
+			return nil, err
 		}
 		for _, r := range batch {
-			if r.Fork {
-				continue
+			if !r.Fork {
+				all = append(all, r)
 			}
-			repos++
-			stars += r.Stars
 		}
 		if len(batch) < 100 {
 			break
 		}
 	}
-	return repos, stars, nil
+	return all, nil
+}
+
+// featuredFrom resolves the configured names against what the API returned,
+// newest push first so the listing reads like ls -t.
+func (c *Client) featuredFrom(repos []repo) []Project {
+	byName := make(map[string]repo, len(repos))
+	for _, r := range repos {
+		byName[strings.ToLower(r.Name)] = r
+	}
+
+	projects := make([]Project, 0, len(c.featured))
+	for _, name := range c.featured {
+		r, ok := byName[strings.ToLower(name)]
+		if !ok {
+			// Renamed, deleted or made private: worth a log line, not a failure.
+			c.log.Warn("featured repo not found", "name", name)
+			continue
+		}
+		language := r.Language
+		if language == "" {
+			language = "-"
+		}
+		projects = append(projects, Project{
+			Name:     r.Name,
+			Language: language,
+			Stars:    r.Stars,
+			PushedAt: r.PushedAt,
+		})
+	}
+
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].PushedAt.After(projects[j].PushedAt)
+	})
+	return projects
 }
 
 func (c *Client) fetchContributions(ctx context.Context) (int, error) {
