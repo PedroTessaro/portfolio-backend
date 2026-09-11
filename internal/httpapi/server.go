@@ -177,9 +177,11 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store.Enabled() {
 		payload["readme_views"] = map[string]int{"total": snap.Views.Total, "today": snap.Views.Today}
+		// Rounded: microsecond precision on a p95 is precision the sample size
+		// doesn't support.
 		payload["latency"] = map[string]any{
-			"p50":     snap.Latency.P50.Round(time.Microsecond).String(),
-			"p95":     snap.Latency.P95.Round(time.Microsecond).String(),
+			"p50":     snap.Latency.P50.Round(100 * time.Microsecond).String(),
+			"p95":     snap.Latency.P95.Round(100 * time.Microsecond).String(),
 			"samples": snap.Latency.Samples,
 		}
 	}
