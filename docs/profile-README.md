@@ -27,7 +27,7 @@
 <p>
   <sub>
     Everything above is rendered per request by
-    <a href="https://github.com/PedroTessaro/portfolio-backend">portfolio-backend</a> —
+    <a href="https://github.com/PedroTessaro/TerminalREADME">TerminalREADME</a> —
     the project listing, the counts and the response time are read live, not written here.
     Try it: <code>curl -s https://pedrotessaro.vercel.app/whoami</code>
   </sub>
@@ -36,7 +36,7 @@
 ---
 
 [All repositories](https://github.com/PedroTessaro?tab=repositories) ·
-[portfolio-backend](https://github.com/PedroTessaro/portfolio-backend) ·
+[TerminalREADME](https://github.com/PedroTessaro/TerminalREADME) ·
 [RSSAggregator](https://github.com/PedroTessaro/RSSAggregator) ·
 [AssemblerImplementation](https://github.com/PedroTessaro/AssemblerImplementation) ·
 [LinkedIn](https://www.linkedin.com/in/pedrotessaro/) ·

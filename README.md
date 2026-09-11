@@ -1,4 +1,4 @@
-# portfolio-backend
+# TerminalREADME
 
 Go service behind the terminal at the top of my GitHub profile. Builds an SVG per
 request: the project listing, the counts and its own response time are all read

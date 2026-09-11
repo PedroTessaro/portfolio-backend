@@ -19,7 +19,7 @@ stack:
 # read live, so the listing can't go stale. Order is by last push, not by this
 # list. A name that no longer exists is skipped with a warning in the logs.
 projects:
-  - "portfolio-backend"
+  - "TerminalREADME"
   - "RSSAggregator"
   - "AssemblerImplementation"
   - "ReversePolishNotationInterpreter"
