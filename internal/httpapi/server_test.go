@@ -27,6 +27,10 @@ func (stubStats) Stats(context.Context) githubapi.Stats {
 		Projects: []githubapi.Project{
 			{Name: "portfolio-backend", Language: "Go", Stars: 3, PushedAt: time.Now()},
 		},
+		AllRepos: []githubapi.Project{
+			{Name: "portfolio-backend", Language: "Go", Stars: 3, PushedAt: time.Now()},
+			{Name: "TextEditor", Language: "C++", PushedAt: time.Now()},
+		},
 	}
 }
 
@@ -361,5 +365,34 @@ func TestPublishCIStoresAndSurfaces(t *testing.T) {
 
 	if body := get(t, h, "/terminal.svg").Body.String(); !strings.Contains(body, "passing") || !strings.Contains(body, "55") {
 		t.Error("published CI status should show up in the SVG")
+	}
+}
+
+// The site is a separate origin, so these two have to be fetchable from it.
+func TestPublicEndpointsAllowCrossOrigin(t *testing.T) {
+	h := newTestServer(t)
+	for _, path := range []string{"/whoami", "/repos"} {
+		if got := get(t, h, path).Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("%s: Access-Control-Allow-Origin = %q, want *", path, got)
+		}
+	}
+}
+
+func TestReposListsEverything(t *testing.T) {
+	var payload struct {
+		Count int `json:"count"`
+		Repos []struct {
+			Name     string `json:"name"`
+			Language string `json:"language"`
+		} `json:"repos"`
+	}
+	if err := json.Unmarshal(get(t, newTestServer(t), "/repos").Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode repos: %v", err)
+	}
+	if payload.Count != len(payload.Repos) {
+		t.Errorf("count = %d but got %d repos", payload.Count, len(payload.Repos))
+	}
+	if len(payload.Repos) == 0 || payload.Repos[0].Name == "" {
+		t.Error("expected the stub's repos to come through")
 	}
 }

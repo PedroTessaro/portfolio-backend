@@ -70,6 +70,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /whoami", s.handleWhoami)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("GET /repos", s.handleRepos)
 	mux.HandleFunc("POST /internal/ci", s.handlePublishCI)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/terminal.svg", http.StatusFound)
@@ -188,10 +189,35 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(payload); err != nil {
 		s.log.Error("writing whoami", "err", err)
+	}
+}
+
+// handleRepos lists every public repo with the metadata the terminal shows for
+// its featured few. My site draws on this because it features a different, and
+// longer, subset than the SVG has room for.
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	stats := s.github.Stats(r.Context())
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	// Read by a static site built elsewhere, so it needs to be fetchable
+	// cross-origin. Public data, read-only, no credentials.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(map[string]any{
+		"count":     len(stats.AllRepos),
+		"cache_age": stats.Age().Round(time.Second).String(),
+		"repos":     stats.AllRepos,
+	}); err != nil {
+		s.log.Error("writing repos", "err", err)
 	}
 }
 

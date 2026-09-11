@@ -35,8 +35,13 @@ type Stats struct {
 	Commits    int       `json:"commits_this_year"`
 	HasCommits bool      `json:"has_commits"` // contributions need a token
 	Projects   []Project `json:"projects"`
-	Last       Commit    `json:"last_commit"`
-	FetchedAt  time.Time `json:"fetched_at"`
+	// Every public repo, for consumers that feature a different subset than the
+	// terminal does — my site lists more of them than the SVG has room for.
+	// Tagged so it survives the Redis cache; /whoami builds its own payload and
+	// leaves this out of the JSON the terminal claims to fetch.
+	AllRepos  []Project `json:"all_repos"`
+	Last      Commit    `json:"last_commit"`
+	FetchedAt time.Time `json:"fetched_at"`
 
 	Stale      bool   `json:"-"`
 	LastAPIErr string `json:"-"`
@@ -166,6 +171,7 @@ func (c *Client) fetch(ctx context.Context) (Stats, error) {
 	stats := Stats{
 		Repos:     len(repos),
 		Projects:  c.featuredFrom(repos),
+		AllRepos:  asProjects(repos),
 		FetchedAt: time.Now(),
 	}
 	for _, r := range repos {
@@ -226,6 +232,29 @@ func (c *Client) fetchRepos(ctx context.Context) ([]repo, error) {
 	return all, nil
 }
 
+// asProjects converts every repo, newest push first.
+func asProjects(repos []repo) []Project {
+	out := make([]Project, 0, len(repos))
+	for _, r := range repos {
+		out = append(out, r.project())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PushedAt.After(out[j].PushedAt) })
+	return out
+}
+
+func (r repo) project() Project {
+	language := r.Language
+	if language == "" {
+		language = "-"
+	}
+	return Project{
+		Name:     r.Name,
+		Language: language,
+		Stars:    r.Stars,
+		PushedAt: r.PushedAt,
+	}
+}
+
 // featuredFrom resolves the configured names against what the API returned,
 // newest push first so the listing reads like ls -t.
 func (c *Client) featuredFrom(repos []repo) []Project {
@@ -242,16 +271,7 @@ func (c *Client) featuredFrom(repos []repo) []Project {
 			c.log.Warn("featured repo not found", "name", name)
 			continue
 		}
-		language := r.Language
-		if language == "" {
-			language = "-"
-		}
-		projects = append(projects, Project{
-			Name:     r.Name,
-			Language: language,
-			Stars:    r.Stars,
-			PushedAt: r.PushedAt,
-		})
+		projects = append(projects, r.project())
 	}
 
 	sort.Slice(projects, func(i, j int) bool {
